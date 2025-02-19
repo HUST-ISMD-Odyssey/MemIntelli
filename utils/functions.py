@@ -90,7 +90,7 @@ def quant_map_tensor(mat, blk=(1, 1, 2, 4), max_abs_temp_mat = None):
         data_int: the quantized data, if mat is 4D, the shape is (num_divide_row_a,num_divide, len(blk) ,m, n),
                     if mat is 5D, the shape is (batch, num_divide_row_a,num_divide, len(blk) ,m, n)
         mat_data: the data after quantization, the same shape as mat
-        max_mat: the max value of the mat, the shape is (num_divide_row_a,num_divide 1, 1) or (batch, num_divide_row_a,num_divide, 1, 1)
+        max_mat: the max value of the mat, the shape is (num_divide_row_a,num_divide, 1, 1) or (batch, num_divide_row_a,num_divide, 1, 1)
         e_bias: None, reserved for the block floating point
     '''
     quant_data_type = torch.uint8 if max(blk)<=8 else torch.int16
@@ -134,6 +134,7 @@ def quant_map_tensor(mat, blk=(1, 1, 2, 4), max_abs_temp_mat = None):
             data_int[:, :, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) >> b
             b += blk[-1 - idx]
     '''
+    
     return data_int, mat_data, max_mat, e_bias
 
 def bfp_map_tensor(mat, blk=(1, 1, 2, 4), bw_e=8,  max_abs_temp_mat = None):

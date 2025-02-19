@@ -312,7 +312,7 @@ class SlicedData():
     sliced_data_recalled: the flag to record the sliced data is calculated or not
 
     """
-    def __init__(self, slice_method:torch.Tensor, bw_e=None, input_en=False,device=None):
+    def __init__(self, slice_method:torch.Tensor, bw_e=None, slice_data_flag=False,device=None):
         """
         the sliced data for the data slicing method with quantization
         :param data: the input data
@@ -323,7 +323,7 @@ class SlicedData():
         :param device: use cpu or gpu, default is cpu (None)
         """
         self.bw_e = bw_e
-        self.input_en = input_en
+        self.slice_data_flag = slice_data_flag
         self.slice_method = slice_method
         self.device = torch.device('cpu') if device is None else device
         self.shape = None
@@ -387,7 +387,7 @@ class SlicedData():
         self.sliced_data, self.quantized_data, self.max_data, self.e_bias = engine.slice_data(data,
                                                                                 self.slice_method,
                                                                                 self.bw_e,
-                                                                                self.input_en
+                                                                                self.slice_data_flag
                                                                                  )
         self.shape = self.quantized_data.shape
 

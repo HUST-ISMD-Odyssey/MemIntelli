@@ -1,53 +1,50 @@
 # -*- coding:utf-8 -*-
 # @File  : memmat_tensor.py
-# @Author: Zhou
-# @Date  : 2024/6/27
+# @Author: ZZW
+# @Date  : 2025/02/19
 
 '''
 this is a new version of the memmat_tensor.py
-we use the tensor to realize the dot product, and only consider the INT format data
-this version is more efficient than the previous version
+Optimizes matrix multiplication processes using tensor operations, supporting both integer (INT) and floating-point (FP) data formats or enhanced efficiency and accuracy.
 '''
-
-
 import torch
 from matplotlib import pyplot as plt
 import sys
 import os 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.functions import quant_map_tensor,  bfp_map_tensor, SNR
+from utils.functions import quant_map_tensor, bfp_map_tensor, SNR
 from utils.data_formats import SlicedData
-
-#from MemIntelli.utils import SlicedData, quant_map_tensor, ABSE, bfp_map_tensor, RE,MSE, SNR
 import math
 import time
 
-def dot_2d(x, y):
-    """
-    use einsum to calculate the cross 2D product
-    :param x: tensor with shape (batch,num_divide_row_a,num_divide, slice_a ,m, n) or (num_divide_row_a,num_divide, slice_a ,m, n)
-    :param y: tensor with shape (num_divide,num_divide_col_b, slice_b ,n, p)
-    """
-    if len(x.shape) == 6:
-        return torch.einsum("bnmijk, mpskl->bnmpisjl", x, y)
-    elif len(x.shape) == 5:         #batch?
-        return torch.einsum("nmijk, mpskl->nmpisjl", x, y)
-    else:
-        raise ValueError('The input data dimension is not supported!')
-
 class DPETensor(object):
     '''
-    use the bit slice method to realize PDE using tensor
-    realize the INT format data
-    :quant_array_gran:  Quantization array granularity        
-        "per-matrix "->per-matrix(the same as matrix size); others e.g. quant_array_gran (128,128)  paral_array_size (64,64),  quant_array_gran needs to be divisible by paral_array_size.
-    :quant_input_gran:  Quantization input granularity, the same as quant_array_gran, but for input
-    :paral_array_size:  Array size for parallel VMM Computing
-    :paral_input_size:  Input size for parallel VMM Computing
+    Implements a dot product engine using bit-sliced tensor operations for matrix multiplication.
+    Supports INT and FP data formats with configurable quantization granularity and device settings.
+
+    Parameters:
+        HGS (float): High conductance state
+        LGS (float): Low conductance state
+        g_level (int): Number of conductance levels
+        var (float): Random Gaussian noise of conductance
+        vnoise (float): Random Gaussian noise of voltage
+        wire_resistance (float): Wire resistance
+        rdac (int): Number of DAC resolution
+        radc (int): Number of ADC resolution
+        vread (float): Read voltage
+        weight_quant_gran (str or tuple): Quantization granularity of the weight matrix
+            "per-matrix" -> The whole matrix is quantized together (i.e., the quantization granularity is (m, n) the same as the matrix shape).
+            "per-row" -> Each row of the matrix is quantized separately. (i.e., the quantization granularity is (1, n)).
+            "per-col" -> Each column of the matrix is quantized separately. (i.e., the quantization granularity is (m, 1)).
+            (a, b) -> The quantization granularity is (a, b).
+        input_quant_gran (str or tuple): Quantization granularity of the input matrix
+        input_paral_size (tuple): The size of the input matrix used for parallel computation
+        weight_paral_size (tuple): The size of the weight matrix used for parallel computation
     '''
     def __init__(
-            self, HGS=1e-4, LGS=1e-8, g_level=2**4, var=0.05, vnoise=0.05, wire_resistance=2.93,
-            rdac=2**4, radc=2**12, vread=0.1, quant_array_gran="per-matrix",quant_input_gran="per-matrix",paral_array_size=(64, 64),paral_input_size=(64, 64),device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu")):
+            self, HGS = 1e-4, LGS = 1e-8, g_level = 2**4, var = 0.05, vnoise = 0.05, wire_resistance = 2.93, rdac = 2**4, radc = 2**12, vread = 0.1, 
+            weight_quant_gran = "per-matrix", input_quant_gran = "per-matrix", weight_paral_size = (64, 64), input_paral_size = (64, 64), 
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")):
         self.device = device
         self.HGS = HGS
         self.LGS = LGS
@@ -58,10 +55,10 @@ class DPETensor(object):
         self.rdac = rdac
         self.radc = radc
         self.vread = vread
-        self.quant_array_gran = quant_array_gran
-        self.quant_input_gran = quant_input_gran
-        self.paral_array_size = paral_array_size
-        self.paral_input_size = paral_input_size
+        self.weight_quant_gran = weight_quant_gran
+        self.input_quant_gran = input_quant_gran
+        self.weight_paral_size = weight_paral_size
+        self.input_paral_size = input_paral_size
 
         if self.radc < 2:
             raise ValueError('The resolution of the ADC should be larger than 1!')
@@ -73,18 +70,21 @@ class DPETensor(object):
             raise ValueError('The low conductance state should be smaller than the high conductance state!')
 
 
-    def __call__(self, x:SlicedData, mat:SlicedData, wire_factor=False):
+    def __call__(self, x: SlicedData, mat: SlicedData, wire_factor=False):
         return self.MapReduceDot(x, mat, wire_factor)
 
-    def MapReduceDot(self, x:SlicedData, mat:SlicedData, wire_factor=False):
-        '''
-        use the MapReduce method to realize the dot product
-        :param x: the input tensor with shape (slice, m, n)
-        :param x_slice_method: the slice method of the input tensor
-        :param mat: the weight tensor with shape (slice, m, p)
-        :param wire_factor: whether consider the wire resistance
-        :return: the output tensor with shape (m, p)
-        '''        
+    def MapReduceDot(self, x: SlicedData, mat: SlicedData, wire_factor = False):
+        """
+        Implements matrix multiplication using the MapReduce method.
+
+        Parameters:
+            x (SlicedData): Input tensor (shape: (m, n) or (batch, m, n)).
+            mat (SlicedData): Weight tensor (shape: (n, p)).
+            wire_factor (bool): Consider wire resistance (not implemented).
+
+        Returns:
+            torch.Tensor: Result of the matrix multiplication.
+        """      
         if mat.device.type != x.device.type:
             raise ValueError('The input data and weight data should be in the same device!')
         if x.quantized_data.shape[-1] != mat.quantized_data.shape[-2]:
@@ -97,10 +97,16 @@ class DPETensor(object):
             result = self._dot(x, mat)
         return result
 
-    def _num2R(self, mat:SlicedData):
-        # convert the weight data to the resistance and add the noise
-        # input dimension (num_divide,num_divide_col_b, slice_b ,n, p)
-        # output dimension (num_divide,num_divide_col_b, slice_b ,n, p)
+    def _num2R(self, mat: SlicedData):
+        """
+        Converts weight data to resistance with added normal noise.
+
+        Parameters:
+            mat (SlicedData): Weight data.
+
+        Returns:
+            torch.Tensor: Resistance values.
+        """
         Q_G = (self.HGS - self.LGS) / (self.g_level - 1)
         max_weights = mat.sliced_max_weights.reshape(1, 1, -1, 1, 1).to(self.device)
         mat.sliced_data = mat.sliced_data.to(self.device)
@@ -108,43 +114,46 @@ class DPETensor(object):
         r = torch.exp(torch.normal(0, self.var, G.shape, device=self.device))
         return G * r
 
-    def _num2V(self, x:SlicedData):
-        # convert input data to the voltage (vread)
+    def _num2V(self, x: SlicedData):
+        """
+        Converts input data to voltage (scaled by read voltage).
+
+        Parameters:
+            x (SlicedData): Input data.
+
+        Returns:
+            torch.Tensor: Voltage values.
+        """
         xmax = x.sliced_max_weights
-        #without batch, the shape is (num_divide_row_a,num_divide, slice_a ,m, n) or (num_divide_row_a,num_divide, slice_a ,dbfp_slice,m, n)
-        if len(x.shape) == 2:       
-            if(x.sliced_data.dim()==5):
-                xmax = xmax.reshape(1, 1, -1, 1, 1)
-            elif(x.sliced_data.dim()==6):
-                xmax = xmax.reshape(1, 1, -1, 1, 1, 1)
-        #with batch, the shape is (batch,num_divide_row_a,num_divide, slice_a ,m, n) or (batch,num_divide_row_a,num_divide, slice_a ,dbfp_slice,m, n)
-        elif len(x.shape) == 3:     
-            if(x.sliced_data.dim()==6):
-                xmax = xmax.reshape(1, 1, 1, -1, 1, 1)
-            elif(x.sliced_data.dim()==7):
-                xmax = xmax.reshape(1, 1, 1, -1, 1, 1, 1)
-            #print(x.sliced_data.shape)
+        if len(x.shape) == 2:        #without batch, the shape is (num_divide_row_x, num_divide_col_x, num_slice_x, m, n)
+            xmax = xmax.reshape(1, 1, -1, 1, 1)
+        elif len(x.shape) == 3:      #with batch, the shape is (batch, num_divide_row_x, num_divide_col_x, num_slice_x, m, n)
+            xmax = xmax.reshape(1, 1, 1, -1, 1, 1)
         else:
             raise ValueError('The input data dimension is not supported!')
         V_in = self.vread * torch.round(x.sliced_data / xmax * (self.rdac - 1)) / (self.rdac - 1)
         return V_in
 
-    def _dot(self, x:SlicedData, mat:SlicedData):
-        '''
-        calculate the dot product of x and m
-        :param x: the input tensor with shape (slice, m, n)
-        :param m: the weight tensor with shape (slice, n, p)
-        :return: the output tensor with shape (m, p)
-        '''
+    def _dot(self, x: SlicedData, mat: SlicedData):
+        """
+        Computes the dot product of input and weight tensors.
+
+        Parameters:
+            x (SlicedData): Input tensor with shape (m, n) or (batch, m, n).
+            mat (SlicedData): Weight tensor with shape (n, p).
+
+        Returns:
+            torch.Tensor: Result of the dot product with shape (m, p) or (batch, m, p).
+        """
         G = self._num2R(mat)
         Vin = self._num2V(x)
         x.sliced_max_weights = x.sliced_max_weights.to(self.device)
         mat.sliced_max_weights = mat.sliced_max_weights.to(self.device)
 
-        if len(x.shape) == 2:
+        if len(x.shape) == 2:    #if the input data has no batch
             adcRef = (self.HGS - self.LGS) * self.vread * Vin.shape[-1]
             QG = (self.HGS - self.LGS) / (self.g_level - 1)
-            I = dot_2d(Vin, G - self.LGS)
+            I = dot_high_dim(Vin, G - self.LGS)
             I = torch.round(I / adcRef * (self.radc - 1)) / (self.radc - 1)
             temp = torch.mul(I, x.sliced_max_weights.reshape(1, 1, 1, -1, 1, 1, 1)).to(self.device)
             temp = torch.round(torch.mul(temp, mat.sliced_max_weights.to(temp.device).reshape(1, 1, 1, 1, -1, 1, 1)) / QG / self.vread / (self.g_level - 1) * adcRef)
@@ -156,7 +165,6 @@ class DPETensor(object):
                             shift_weights.reshape(1, 1, 1, -1, 1, 1))
             out = out.sum(dim=3) 
             if x.bw_e is None:
-            #每一块小矩阵的max_data的乘积
                 out_block_max = torch.einsum("nmij, mpij->nmpij",x.max_data.to(self.device) , mat.max_data.to(self.device))
                 out = (out* out_block_max
                         / (2 ** (sum(x.slice_method.to(self.device)) - 1) - 1) / (2 ** (sum(mat.slice_method.to(self.device)) - 1) - 1))
@@ -171,7 +179,7 @@ class DPETensor(object):
         elif len(x.shape) == 3:     
             adcRef = (self.HGS - self.LGS) * self.vread * Vin.shape[-1]
             QG = (self.HGS - self.LGS) / (self.g_level - 1)
-            I = dot_2d(Vin, G - self.LGS)
+            I = dot_high_dim(Vin, G - self.LGS)
             I = torch.round(I / adcRef * (self.radc - 1)) / (self.radc - 1)
             temp = torch.mul(I, x.sliced_max_weights.reshape(1, 1, 1, 1, -1, 1, 1, 1))
             temp = torch.round(torch.mul(temp, mat.sliced_max_weights.reshape(1, 1, 1, 1, 1, -1, 1, 1))/ QG / self.vread / (self.g_level - 1) * adcRef)
@@ -180,12 +188,10 @@ class DPETensor(object):
             for i in range(len(x)):
                 shift_weights[i] = x.sliced_weights[i] * mat.sliced_weights
             # add the shift weights to the calculated result
-
             out = torch.mul(temp.reshape(temp.shape[0],temp.shape[1],temp.shape[2],temp.shape[3], -1, temp.shape[6], temp.shape[7]),
                             shift_weights.reshape(1, 1, 1, 1, -1, 1, 1))
             out = out.sum(dim=4) 
             if x.bw_e is None:
-            #每一块小矩阵的max_data的乘积
                 out_block_max = torch.einsum("bnmij, mpij->bnmpij",x.max_data , mat.max_data)
                 out = (out* out_block_max
                         / (2 ** (sum(x.slice_method) - 1) - 1) / (2 ** (sum(mat.slice_method) - 1) - 1))
@@ -195,39 +201,36 @@ class DPETensor(object):
             out = out.sum(dim=2)
             out = out.permute(0, 1, 3, 2, 4)
             out = out.reshape(out.shape[0],out.shape[1] * out.shape[2], out.shape[3] * out.shape[4])
-            #print(x.shape,mat.shape,out.shape)
             result = out[:out.shape[0],:x.shape[1],:mat.shape[1]]
-        
         else:
             raise ValueError('The input data dimension is not supported!')
 
         return result
 
-    def slice_data(self, mat, slice_method, bw_e=None,input_en=False):
+    def slice_data(self, mat: torch.Tensor, slice_method: (torch.Tensor, list), bw_e: int = None, slice_data_flag: bool = False):
         """
-        slice the data using the slice method
-        :param mat: the data to be sliced, 3D tensor, the shape is (batch, row, col)
-        :param slice_method: the slice method, tensor or list
-        :param transpose: if transpose is True, then mat should be transpoed before slicing
-                            if transpose is False, then mat should be sliced directly
-        :param bw_e: the width of the exponent, if bw_e is None, then the data is INT format
-        :param input_en: if input_en is True, then the input data and weight data has different size
-        :param dbfp_en: if dbfp_en is True, then the input data is dbfp format
-        :return:
-                data_int: the sliced data in INT format, the shape is (batch, divide_num, slice, row, col)
-                mat_data: the data quantized by the slice method, the shape is the same as the input data
-                max_mat: the max value of the input data for each slice, the shape is (batch, divide_num, 1, 1, 1)
-                e_bias: the bias of the exponent, the shape is (batch, divide_num, slice)
-        """
-        # take all the input as 4D tensor
-        unsqueezed = False
+        Slices the input or weight data using the specified method.
 
+        Parameters:
+            mat (torch.Tensor): Data to be sliced.
+            slice_method (torch.Tensor): Method for slicing.
+            bw_e (int): Bit width for exponent (if None, uses integer format).
+            slice_data_flag (bool): Flag for slicing data (True for input, False for weight).
+
+        Returns:
+            data_int (torch.Tensor): the quantized data, the shape is (num_divide_row_a, num_divide, num_slice ,m , n) or (batch, num_divide_row_a, num_divide, num_slice ,m , n)
+            mat_data (torch.Tensor): the data quantized by the slice method, the shape is the same as the data
+            max_mat (torch.Tensor): the max value of the data for each quantization granularity, the shape is (num_divide_row_a, num_divide, 1, 1) or (batch, num_divide_row_a, num_divide, 1, 1)
+            e_bias (torch.Tensor): the bias of the exponent for each quantization granularity, the shape is (num_divide_row_a, num_divide, 1, 1) or (batch, num_divide_row_a, num_divide, 1, 1)
+        """
+        # Convert 2d to 3d makes it easier to follow along with the process
+        unsqueezed = False
         if len(mat.shape) == 2:
             mat = mat.unsqueeze(0)
             unsqueezed = True
 
-        quant_gran = self.quant_input_gran if input_en else self.quant_array_gran
-        paral_size = self.paral_input_size if input_en else self.paral_array_size
+        quant_gran = self.input_quant_gran if slice_data_flag else self.weight_quant_gran
+        paral_size = self.input_paral_size if slice_data_flag else self.weight_paral_size
         mat = mat.to(self.device)
         if quant_gran == "per-matrix":
             quant_gran = mat.shape[1:]
@@ -239,7 +242,7 @@ class DPETensor(object):
             quant_gran = quant_gran
         
         quant_gran = list(quant_gran) 
-        #将quant_gran变为paral_size的整数倍
+        #extend quant_gran to an integer multiple of paral_size
         quant_gran[0] = math.ceil(quant_gran[0] / paral_size[0]) * paral_size[0]
         quant_gran[1] = math.ceil(quant_gran[1] / paral_size[1]) * paral_size[1]
 
@@ -253,7 +256,7 @@ class DPETensor(object):
         temp_mat[:, :mat.shape[1], :mat.shape[2]] = mat
         temp_mat = temp_mat.reshape(mat.shape[0], num_gran_row, quant_gran[0], num_gran_col, quant_gran[1]).transpose(2, 3)
         max_abs_temp_mat = torch.max(torch.max(torch.abs(temp_mat), dim=-1, keepdim=True)[0], dim=-2, keepdim=True)[0].to(mat.device)
-        #max_abs_temp_mat从(mat.shape[0], num_gran_row, num_gran_col,  1,  1)广播到 (mat.shape[0], num_gran_row, num_gran_col, num_divide_row,num_divide_col, 1,  1)
+        # Broadcast max_abs_temp_mat from (mat.shape[0], num_gran_row, num_gran_col, 1, 1) to (mat.shape[0], num_gran_row, num_gran_col, num_divide_row, num_divide_col, 1, 1)
         max_abs_temp_mat = max_abs_temp_mat.unsqueeze(3).unsqueeze(4).expand(-1, -1, -1, num_divide_row, num_divide_col, -1, -1).to(mat.device)
         max_abs_temp_mat = max_abs_temp_mat.transpose(2, 3).reshape(mat.shape[0], num_gran_row * num_divide_row, num_gran_col * num_divide_col, 1, 1).to(mat.device)
         
@@ -266,7 +269,7 @@ class DPETensor(object):
             data_int, mat_data, max_mat, e_bias = bfp_map_tensor(temp_mat, slice_method, bw_e, max_abs_temp_mat)
         else:
             data_int, mat_data, max_mat, e_bias = quant_map_tensor(temp_mat, slice_method, max_abs_temp_mat)
-        # the transpose is used to make the data_int is the same as the input data
+        
         mat_data = mat_data.to(self.device)
         max_mat = max_mat.to(self.device)
         e_bias = e_bias.to(self.device) if e_bias is not None else None
@@ -282,6 +285,24 @@ class DPETensor(object):
         
         return data_int, mat_data, max_mat, e_bias
 
+def dot_high_dim(x, y):
+    """
+    Computes the dot product of two sliced high-dimensional tensors using torch.einsum.
+
+    Parameters:
+        x (torch.Tensor): First tensor (shape: (num_divide_row_x, num_divide_col_x, num_slice_x, m, n) or (batch, num_divide_row_x, num_divide_col_x, num_slice_x, m, n)).
+        y (torch.Tensor): Second tensor (shape: (num_divide_row_y, num_divide_col_y, num_slice_y, n, p)).
+
+    Returns:
+        torch.Tensor: Result of the dot product (shape: (num_divide_row_x, num_divide_col_y, num_slice_x, num_slice_y, m, p) or (batch, num_divide_row_x, num_divide_col_y, num_slice_x, num_slice_y, m, p)).
+    """
+    if len(x.shape) == 5:       #if the input data has no batch
+        return torch.einsum("nmijk, mpskl->nmpisjl", x, y)
+    elif len(x.shape) == 6:     #if the input data has batch
+        return torch.einsum("bnmijk, mpskl->bnmpisjl", x, y)
+    else:
+        raise ValueError('The input data dimension is not supported!')
+
 if __name__ == '__main__':
     tb_mode = 0
     device = torch.device('cuda:0')
@@ -292,10 +313,10 @@ if __name__ == '__main__':
         mblk = torch.tensor([1,1,2,4])
         xblk = torch.tensor([1,1,2,4])
         mat = SlicedData(mblk, device=device,bw_e=8)
-        x = SlicedData(xblk, device=device,bw_e=8,input_en=True)
+        x = SlicedData(xblk, device=device,bw_e=8,slice_data_flag=True)
         size = 64
         paral_size = size
-        engine = DPETensor(var=0.00,g_level=16,rdac=16,radc=2**16,quant_array_gran=(size,size),quant_input_gran=(1,size),paral_array_size=(paral_size,paral_size),paral_input_size=(1,paral_size))
+        engine = DPETensor(var=0.00,g_level=16,rdac=16,radc=2**16,weight_quant_gran=(size,size),input_quant_gran=(1,size),weight_paral_size=(paral_size,paral_size),input_paral_size=(1,paral_size))
         mat.slice_data_imp(engine, mat_data)
         x.slice_data_imp(engine, x_data)
         start = time.time()
@@ -303,12 +324,34 @@ if __name__ == '__main__':
         rel_result = torch.matmul(x_data, mat_data).cpu().numpy()
         snr_varlue = SNR(result, rel_result)
         print("SNR(dB)",snr_varlue)
-
         plt.scatter(rel_result.reshape(-1), result.reshape(-1))
         plt.xlabel('Expected Value of Dot Product')
         plt.ylabel('Measured Value of Dot Product')
         plt.show()
+    elif tb_mode == 1:
+        torch.manual_seed(42)
+        x_data = torch.randn(1000, 1000,dtype=torch.float64,device=device)
+        mat_data = torch.randn(1000,1000,dtype=torch.float64,device=device)
+        mblk = torch.tensor([1,1,1])
+        xblk = torch.tensor([1,1,1,])
+        mat = SlicedData(mblk, device=device,bw_e=None)
+        x = SlicedData(xblk, device=device,bw_e=None,slice_data_flag=True)
+        size = 256
+        paral_size = size
+        for radc in [2**4,2**5,2**6,2**7,2**8,2**9,2**10,2**11,2**12]:
+            engine = DPETensor(var=0.02,g_level=2,rdac=2,radc=radc,weight_quant_gran=(size,size),input_quant_gran=(1,size),weight_paral_size=(paral_size,paral_size),input_paral_size=(1,paral_size))
+            mat.slice_data_imp(engine, mat_data)
+            x.slice_data_imp(engine, x_data)
+            start = time.time()
+            result = engine(x, mat).cpu().numpy()
+            rel_result = torch.matmul(x_data, mat_data).cpu().numpy()
+            snr_varlue = SNR(result, rel_result)
+            print("radc=",radc,"SNR(dB)",snr_varlue)
 
+            plt.scatter(rel_result.reshape(-1), result.reshape(-1))
+            plt.xlabel('Expected Value of Dot Product')
+            plt.ylabel('Measured Value of Dot Product')
+        #plt.show()
         
 
 
