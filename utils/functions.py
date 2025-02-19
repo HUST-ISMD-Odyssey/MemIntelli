@@ -7,7 +7,7 @@ import inspect
 import numpy as np
 import torch
 from prettytable import PrettyTable
-#torch.set_default_dtype(torch.float64)
+
 def generate_noise(row, col, **kwargs):
     try:
         mat = np.random.normal(kwargs['mean'], kwargs['std'], (row, col))
@@ -81,17 +81,20 @@ def use_engine(engine):
         return wrapper
     return decorator
 
-def quant_map_tensor(mat, blk=(1, 1, 2, 4), max_abs_temp_mat = None):
+def quant_map_tensor(mat, blk = (1, 1, 2, 4), max_abs_temp_mat = None):
     '''
     convert the data to the quantized data
-    :param mat: 5D tensor (num_divide_row_a,num_divide ,m, n) or 6D tensor (batch,num_divide_row_a,num_divide ,m, n)
-    :param blk: slice method
-    :return:
-        data_int: the quantized data, if mat is 4D, the shape is (num_divide_row_a,num_divide, len(blk) ,m, n),
-                    if mat is 5D, the shape is (batch, num_divide_row_a,num_divide, len(blk) ,m, n)
-        mat_data: the data after quantization, the same shape as mat
-        max_mat: the max value of the mat, the shape is (num_divide_row_a,num_divide, 1, 1) or (batch, num_divide_row_a,num_divide, 1, 1)
-        e_bias: None, reserved for the block floating point
+
+    Parameters:
+        mat (torch.tensor): (batch, num_divide_row, num_divide_col, m, n)
+        blk (tuple): slice method
+        max_abs_temp_mat (torch.tensor): the max value of the mat 
+
+    Returns:
+        data_int (torch.Tensor): the quantized data, the shape is (batch, num_divide_row_a, num_divide, num_slice ,m , n)
+        mat_data (torch.Tensor): the data quantized by the slice method, the shape is the same as the data
+        max_mat (torch.Tensor): the max value of the data for each quantization granularity, the shape is (batch, num_divide_row_a, num_divide, 1, 1)
+        e_bias (torch.Tensor): None, reserved for the block floating point (BFP)
     '''
     quant_data_type = torch.uint8 if max(blk)<=8 else torch.int16
     e_bias = None
@@ -107,37 +110,17 @@ def quant_map_tensor(mat, blk=(1, 1, 2, 4), max_abs_temp_mat = None):
     location = torch.where(matq < 0)
     matq[location] = 2 ** bits + matq[location]  
 
-    '''
-    shape_len = len(mat.shape)
-    shape = list(mat.shape[:shape_len - 2]) + [len(blk)] + list(mat.shape[shape_len - 2:])
-    data_int = torch.empty(shape, device=mat.device, dtype=quant_data_type)
+    data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]), device=mat.device, dtype=quant_data_type)
     b = 0
-    for idx in range(len(blk)):
-        if shape_len == 4:
-            data_int[:, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) >> b
-        elif shape_len == 5:
-            data_int[:, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) >> b
+    for idx in range(len(blk)): 
+        data_int[:, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) >> b
         b += blk[-1 - idx]
-    '''
-
-    if len(mat.shape) == 5:
-        data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]), device=mat.device, dtype=quant_data_type)
-        b = 0
-        for idx in range(len(blk)): 
-            data_int[:, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) >> b
-            b += blk[-1 - idx]
-    '''
-    elif len(mat.shape) == 6:
-        data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], mat.shape[3], len(blk), mat.shape[4], mat.shape[5]), device=mat.device, dtype=quant_data_type)
-        b = 0
-        for idx in range(len(blk)):
-            data_int[:, :, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) >> b
-            b += blk[-1 - idx]
-    '''
     
     return data_int, mat_data, max_mat, e_bias
 
 def bfp_map_tensor(mat, blk=(1, 1, 2, 4), bw_e=8,  max_abs_temp_mat = None):
+    
+    
     '''
     convert the data to the quantized data with block floating point
     :param mat: 5D tensor (batch,num_divide_row_a,num_divide ,m, n)
@@ -155,8 +138,6 @@ def bfp_map_tensor(mat, blk=(1, 1, 2, 4), bw_e=8,  max_abs_temp_mat = None):
     
     e_bias = torch.full_like(max_mat, 0)
     e_bias = torch.floor(torch.log2(max_mat+1e-10))
-    # e_bias = torch.full_like(max_mat, -2**(bw_e-1)+1)
-    # e_bias[torch.where(max_mat > 0)] = torch.floor(torch.log2(max_mat[torch.where(max_mat > 0)]))
     matq = mat / 2.**e_bias
     matq = torch.round(matq*2.**(bits-2))
     clip_up = (2 ** (bits - 1) - 1).to(mat.device)      
@@ -165,13 +146,8 @@ def bfp_map_tensor(mat, blk=(1, 1, 2, 4), bw_e=8,  max_abs_temp_mat = None):
     mat_data = matq * 2. ** (e_bias + 2 - bits)  # 存储的是反量化后的数据
     location = torch.where(matq < 0)
     matq[location] = 2. ** bits + matq[location]
-    if len(mat.shape) == 4:
-        data_int = torch.empty((mat.shape[0], mat.shape[1], len(blk), mat.shape[2], mat.shape[3]), device=mat.device, dtype=quant_data_type)
-        b = 0
-        for idx in range(len(blk)): 
-            data_int[:, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) /(2**b)
-            b += blk[-1 - idx]
-    elif len(mat.shape) == 5:
+
+    if len(mat.shape) == 5:
         data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]), device=mat.device, dtype=quant_data_type)
         b = 0
         for idx in range(len(blk)):

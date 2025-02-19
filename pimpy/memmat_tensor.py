@@ -156,7 +156,7 @@ class DPETensor(object):
             I = dot_high_dim(Vin, G - self.LGS)
             I = torch.round(I / adcRef * (self.radc - 1)) / (self.radc - 1)
             temp = torch.mul(I, x.sliced_max_weights.reshape(1, 1, 1, -1, 1, 1, 1)).to(self.device)
-            temp = torch.round(torch.mul(temp, mat.sliced_max_weights.to(temp.device).reshape(1, 1, 1, 1, -1, 1, 1)) / QG / self.vread / (self.g_level - 1) * adcRef)
+            temp = (torch.mul(temp, mat.sliced_max_weights.to(temp.device).reshape(1, 1, 1, 1, -1, 1, 1)) / QG / self.vread / (self.g_level - 1) * adcRef)
             shift_weights = torch.zeros((len(x),len(mat)), device=x.device)
             
             for i in range(len(x)):
@@ -182,7 +182,7 @@ class DPETensor(object):
             I = dot_high_dim(Vin, G - self.LGS)
             I = torch.round(I / adcRef * (self.radc - 1)) / (self.radc - 1)
             temp = torch.mul(I, x.sliced_max_weights.reshape(1, 1, 1, 1, -1, 1, 1, 1))
-            temp = torch.round(torch.mul(temp, mat.sliced_max_weights.reshape(1, 1, 1, 1, 1, -1, 1, 1))/ QG / self.vread / (self.g_level - 1) * adcRef)
+            temp = (torch.mul(temp, mat.sliced_max_weights.reshape(1, 1, 1, 1, 1, -1, 1, 1))/ QG / self.vread / (self.g_level - 1) * adcRef)
             shift_weights = torch.zeros((len(x),len(mat)), device=x.device)
             
             for i in range(len(x)):

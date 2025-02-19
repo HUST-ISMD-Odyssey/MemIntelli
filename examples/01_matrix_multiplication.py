@@ -31,11 +31,11 @@ def main():
         rdac=2**2,                      # Number of DAC resolution 
         g_level=2**2,                   # Number of conductance levels
         radc=2**10,                     # Number of ADC resolution 
-        quant_array_gran=(128, 128),    # Quantization granularity of the crossbar array
-        quant_input_gran=(1, 128),      # Quantization granularity of the input
-        paral_array_size=(32, 32),      # The size of the crossbar array used for parallel computation, 
+        weight_quant_gran=(128, 128),    # Quantization granularity of the crossbar array
+        input_quant_gran=(1, 128),      # Quantization granularity of the input
+        weight_paral_size=(32, 32),      # The size of the crossbar array used for parallel computation, 
                                         # where (32, 32) here indicates that the crossbar array is divided into 32x32 sub-arrays for parallel computation
-        paral_input_size=(1, 32)        # The size of the input data used for parallel computation,
+        input_paral_size=(1, 32)        # The size of the input data used for parallel computation,
                                         # where (1, 32) here indicates that the input data is divided into 1×32 sub-inputs for parallel computation
     )
 
@@ -49,12 +49,12 @@ def main():
 
     # Create sliced data objects and slice the input and weight data according to the CIM engine's parameters 
     # INT mode
-    input_int = SlicedData(input_slice, device=device, bw_e=None)
+    input_int = SlicedData(input_slice, device=device, bw_e=None, slice_data_flag=True)
     weight_int = SlicedData(weight_slice, device=device, bw_e=None)
     input_int.slice_data_imp(cim_engine,input_data)
     weight_int.slice_data_imp(cim_engine,weight_data)
     # FP mode
-    input_fp = SlicedData(input_slice, device=device, bw_e=8)
+    input_fp = SlicedData(input_slice, device=device, bw_e=8, slice_data_flag=True)
     weight_fp = SlicedData(weight_slice, device=device, bw_e=8)
     input_fp.slice_data_imp(cim_engine,input_data)
     weight_fp.slice_data_imp(cim_engine,weight_data)
