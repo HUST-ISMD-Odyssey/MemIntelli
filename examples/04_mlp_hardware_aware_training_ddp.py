@@ -1,9 +1,12 @@
 # -*- coding:utf-8 -*-
-# @File  : 01_mutiple_layer_inference.py
+# @File  : 04_mlp_hardware_aware_training_ddp.py
 # @Author: ZZW
 # @Date  : 2025/2/9
-"""Memintelli example 1: Multiple layer inference with MLP on MNIST.
-This example demonstrates the usage of Memintelli with a simple MLP classifier that has been trained in software.
+"""Memintelli example 4: MLP hardware aware training with Distributed Data Parallel (DDP).
+This example demonstrates the usage of Memintelli with DDP.
+
+The usage of this script is as follows:
+python -m torch.distributed.run --nproc_per_node=2 ./examples/04_mlp_hardware_aware_training_ddp.py 
 """
 
 import os
@@ -45,10 +48,8 @@ class MNISTClassifier(nn.Module):
         # Create hidden layers
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
-                self.layers.append(
-                    LinearMem(engine, in_dim, out_dim, input_slice, weight_slice,
-                             device=device, bw_e=bw_e)
-                )
+                self.layers.append(LinearMem(engine, in_dim, out_dim, input_slice, weight_slice,
+                             device=device, bw_e=bw_e))
             else:
                 self.layers.append(nn.Linear(in_dim, out_dim))
 
@@ -60,17 +61,18 @@ class MNISTClassifier(nn.Module):
         x = self.layers[-1](x)
         return F.softmax(x, dim=1)
 
-    def update_weights(self):
+    def update_weight(self):
         """Update weights for all layers."""
-        # 检查模型是否被包裹在 DataParallel 中
+        # Check if model is wrapped in DDP
         if isinstance(self, nn.DataParallel):
             module = self.module
         else:
             module = self
         
-        if module.mem_enabled:
+        if self.mem_enabled:
             for layer in module.layers:
                 layer.update_weight()
+                
 def load_mnist(data_root, batch_size=256):
     """Load MNIST dataset with normalization."""
     transform = transforms.Compose([
@@ -139,7 +141,7 @@ def train_model(model, train_loader, test_loader, device,
                 optimizer.step()
                 
                 if mem_enabled:
-                    model.module.update_weights()
+                    model.module.update_weight()
                 
                 epoch_loss += loss.item() * images.size(0)
                 pbar.set_postfix({"loss": f"{loss.item():.4f}"})
@@ -184,12 +186,9 @@ def main():
         "layer_dims": [784, 512, 128, 10],
         "input_slice": (1, 1, 2),
         "weight_slice": (1, 1, 2),
+        "bw_e": 8,
     }
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl")
 
-    # Initialize components
     train_loader, test_loader = load_mnist(config["data_root"], config["batch_size"])
     
     # Initialize memory engine and model
@@ -198,24 +197,34 @@ def main():
         rdac=2**2,
         g_level=2**2,
         radc=2**12,
-        quant_array_gran=(128, 1),
-        quant_input_gran=(1, 128),
-        paral_array_size=(64, 1),
-        paral_input_size=(1, 64),
+        weight_quant_gran=(128, 1),
+        input_quant_gran=(1, 128),
+        weight_paral_size=(64, 1),
+        input_paral_size=(1, 64),
         device=torch.device("cuda")
     )
+    
+    local_rank = int(os.environ["LOCAL_RANK"]) # Get local_rank from environment variable (unique per process on a machine)
+    torch.cuda.set_device(local_rank) # Set current CUDA device to match this process's local rank
+    dist.init_process_group(backend="nccl") # Initialize distributed process group with NCCL backend (optimized for NVIDIA GPUs)
+
     model = MNISTClassifier(
         engine=mem_engine,
         input_slice=config["input_slice"],
         weight_slice=config["weight_slice"],
         device=torch.device("cuda"),
         layer_dims=config["layer_dims"],
+        bw_e=config["bw_e"],
         mem_enabled=True
-    ).to(local_rank)
+    ).to(local_rank)    # Explicit device placement
 
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
+        # DDP wrapper config:
+        # - device_ids: specifies which GPU this process should use
+        # - output_device: where to gather outputs (matches device_ids)
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
     # Train and evaluate
     train_model(
         model,
@@ -226,13 +235,13 @@ def main():
         lr=config["learning_rate"],
         mem_enabled=True
     )
-    dist.destroy_process_group()
+    dist.destroy_process_group()    # Clean up distributed process group
 
-    # 评估模型
+    # evaluate the model
     if local_rank == 0:
-        model = model.module  # 获取 DDP 模型的主模块
+        model = model.module  
         model.load_state_dict(model.state_dict())
-        model.update_weights()
+        model.update_weight()
         final_acc_mem = evaluate(model, test_loader, torch.device("cuda"))
         print(f"\nFinal test accuracy in mem mode: {final_acc_mem:.2%}")
 

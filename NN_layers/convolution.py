@@ -15,7 +15,7 @@ from NN_layers.functions import conv1d_mem_func, conv2d_mem_func
 from pimpy import DPETensor
 
 class Conv1dMem(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size,  input_sli_med:SliceMethod, weight_sli_med:SliceMethod,
+    def __init__(self, in_channels, out_channels, kernel_size,  input_slice:SliceMethod, weight_slice:SliceMethod,
                  stride=1, padding=0, dilation=1, groups=1, bias=True, device=None, dtype=None):
         super(Conv1dMem, self).__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -50,8 +50,8 @@ class Conv1dMem(nn.Module):
 
 
 class Conv2dMem(nn.Module):
-    def __init__(self, engine, in_channels, out_channels, kernel_size, input_sli_med:[list, tuple, torch.Tensor],
-                 weight_sli_med:[list, tuple], stride=1, padding=0, dilation=1, bw_e=None,input_en=False,
+    def __init__(self, engine, in_channels, out_channels, kernel_size, input_slice:[list, tuple, torch.Tensor],
+                 weight_slice:[list, tuple], stride=1, padding=0, dilation=1, bw_e=None, 
                  bias=True, device=None, dtype=None):
         super(Conv2dMem, self).__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -62,7 +62,6 @@ class Conv2dMem(nn.Module):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
-        self.input_en = input_en
 
         factory_kwargs = {'device': device, 'dtype': dtype}
 
@@ -73,12 +72,12 @@ class Conv2dMem(nn.Module):
             self.register_parameter('bias', None)
         self.reset_parameters()
 
-        self.weight_slice_method = torch.tensor(weight_sli_med).to(device)
-        self.input_slice_method = torch.tensor(input_sli_med).to(device)
+        self.weight_slice_method = torch.tensor(weight_slice).to(device)
+        self.input_slice_method = torch.tensor(input_slice).to(device)
 
         self.weight_sliced = SlicedData(self.weight_slice_method,
                                         device=device,
-                                        bw_e=bw_e)
+                                        bw_e=bw_e, slice_data_flag=False)
         self.engine = engine
         # the sliced weight shape is (C_in*kh*kw, C_out)
         self.weight_sliced.slice_data_imp(engine, self.weight.reshape(self.weight.shape[0], -1).detach().t())
@@ -96,7 +95,7 @@ class Conv2dMem(nn.Module):
         # input_unfold size: (N, C*kh*kw, L), N is the batch size, C is the channel, kh and kw is the kernel size
         # L is the length of the unfolded vector, L = H_out * W_out
         # transpose the input_unfold to (N, L, C*kh*kw)
-        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,input_en=True)
+        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,slice_data_flag=True)
         input_unfold = F.unfold(input, kernel_size=self.weight.shape[2:], stride=self.stride, padding=self.padding,
                                 dilation=self.dilation).transpose(1, 2)
         input_sliced.slice_data_imp(self.engine, input_unfold.detach())
@@ -120,7 +119,16 @@ def _test():
     torch.manual_seed(100)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     X = torch.randn(5, 3, 96, 96, requires_grad=True, dtype=torch.float).to(device)
-    engine = DPETensor(var=0.05, quant_array_gran=(128, 128), quant_input_gran=(1, 128), paral_array_size=(64, 64), paral_input_size=(1, 64))
+    engine = DPETensor(
+        var=0.02,
+        rdac=2**2,
+        g_level=2**2,
+        radc=2**12,
+        weight_quant_gran=(128, 128),
+        input_quant_gran=(1, 128),
+        weight_paral_size=(64, 64),
+        input_paral_size=(1, 64)
+    )
     xblk = [1, 1, 2, 4]
     mblk = [1, 1, 2, 4]
 
@@ -139,8 +147,6 @@ def _test():
     print(layer.weight.grad[0][0])
 
 if __name__== '__main__':
-    # import cProfile
-    # cProfile.run('_test()', '../temp/conv2d.prof')
     _test()
 
 

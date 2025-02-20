@@ -53,7 +53,7 @@ class MNISTClassifier(nn.Module):
         x = self.layers[-1](x)
         return F.softmax(x, dim=1)
 
-    def update_weights(self):
+    def update_weight(self):
         """Convert the model weights (FP32) to PIM sliced_weights. 
         ***This function is very important for loading as well as updating pre-training weights in inference or training.***            """
         if self.mem_enabled:
@@ -110,7 +110,7 @@ def train_model(model, train_loader, test_loader, device,
                 optimizer.step()
                 
                 if mem_enabled:
-                    model.update_weights()
+                    model.update_weight()
                 
                 epoch_loss += loss.item() * images.size(0)
                 pbar.set_postfix({"loss": f"{loss.item():.4f}"})
@@ -150,7 +150,7 @@ def main():
     config = {
         "data_root": "/dataset/",   # Change this to your dataset directory
         "batch_size": 256,
-        "epochs": 100,
+        "epochs": 10,
         "learning_rate": 0.001,
         "layer_dims": [784, 512, 128, 10],
         "input_slice": (1, 1, 2),
@@ -204,9 +204,9 @@ def main():
         layer_dims=config["layer_dims"],
         mem_enabled=True
     ).to(device)
-    # Load the pre-trained weights from the software model and use update_weights() to convert them to memristive sliced_weights
+    # Load the pre-trained weights from the software model and use update_weight() to convert them to memristive sliced_weights
     mdoel_mem.load_state_dict(model.state_dict())
-    mdoel_mem.update_weights()
+    mdoel_mem.update_weight()
     
     final_acc_mem = evaluate(mdoel_mem, test_loader, device)
     print(f"\nFinal test accuracy in memristive mode: {final_acc_mem:.2%}")

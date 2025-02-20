@@ -74,13 +74,13 @@ class MNISTClassifier(nn.Module):
                 layer.update_weight()
 ```
 Also the `update_weights()` function is very critical, especially if you are loading pre-trained weights, use this function to convert the original weights into quantized sliced weights.
-The network is trained for 100 epoches in software mode and inferenced in memristive mode. The validated accuracy and loss is printed for every epoch, and final test accuracy in memristive mode is also printed:
+The network is trained for 10 epoches in software mode and inferenced in memristive mode. The validated accuracy and loss is printed for every epoch, and final test accuracy in memristive mode is also printed:
 ```
-Epoch 1/100: 100%|█████████████████████████████████| 235/235 [00:05<00:00, 41.98batch/s, loss=1.5303]
+Epoch 1/10: 100%|█████████████████████████████████| 235/235 [00:05<00:00, 41.98batch/s, loss=1.5303]
 Epoch 1 - Avg loss: 1.6647, Val accuracy: 90.88%
 ...
-Epoch 100/100: 100%|█████████████████████████████████| 235/235 [00:05<00:00, 41.08batch/s, loss=1.4716]
-Epoch 100 - Avg loss: 1.4901, Val accuracy: 97.05%
+Epoch 100/10: 100%|█████████████████████████████████| 235/235 [00:05<00:00, 41.08batch/s, loss=1.4716]
+Epoch 10 - Avg loss: 1.4901, Val accuracy: 97.05%
 Final test accuracy in memristive mode: 96.53%
 ```
 
@@ -99,10 +99,55 @@ train_model(
 ```
 The results are shown below:
 ```
-Epoch 1/100: 100%|█████████████████████████████████| 235/235 [00:09<00:00, 25.68batch/s, loss=1.6513]
+Epoch 1/10: 100%|█████████████████████████████████| 235/235 [00:09<00:00, 25.68batch/s, loss=1.6513]
 Epoch 1 - Avg loss: 1.6647, Val accuracy: 82.73%
 ...
-Epoch 100/100: 100%|█████████████████████████████████| 235/235 [00:09<00:00, 23.51batch/s, loss=1.5256]
-Epoch 100 - Avg loss: 1.4901, Val accuracy: 96.39%
+Epoch 10/10: 100%|█████████████████████████████████| 235/235 [00:09<00:00, 23.51batch/s, loss=1.5256]
+Epoch 10 - Avg loss: 1.4901, Val accuracy: 96.39%
 Final test accuracy in memristive mode: 96.37%
+```
+
+## Example 4: [`04_mlp_hardware_aware_training_ddp.py`](./04_mlp_hardware_aware_training_ddp.py)
+Since the computation is slower in memristive mode than in software mode, we utilize `Distributed Data Parallel (DDP)` for acceleration in this example.
+
+Please use the following script to run the DDP code. A single node uses two processes, each calling a GPU.
+```
+python -m torch.distributed.run --nproc_per_node=2 ./examples/04_mlp_hardware_aware_training_ddp.py
+```
+
+The results are shown below:
+```
+Using 2 GPUs!
+Using 2 GPUs!
+Epoch 1/10: 100%|█████████████████████████████████| 118/118 [00:09<00:00, 32.13batch/s, loss=1.6420]
+Epoch 1/10: 100%|█████████████████████████████████| 118/118 [00:09<00:00, 30.198batch/s, loss=1.7299]
+Epoch 1 - Avg loss: 1.6647, Val accuracy: 83.64%
+Epoch 1 - Avg loss: 1.6647, Val accuracy: 84.06%
+...
+Epoch 10/10: 100%|█████████████████████████████████| 118/118 [00:09<00:00, 29.05batch/s, loss=1.4921]
+Epoch 10/10: 100%|█████████████████████████████████| 118/118 [00:09<00:00, 31.48batch/s, loss=1.4653]
+Epoch 10 - Avg loss: 0.7494, Val accuracy: 95.90%
+Epoch 10 - Avg loss: 0.7483, Val accuracy: 96.44%
+Final test accuracy in memristive mode: 96.52%
+```
+
+## Example 5: [`05_vgg_cifar_inference.py`](./05_vgg_cifar_inference.py)
+As a typical CNN, `VGG` is used in this example on the `CIFAR10` and `CIFAR100` datasets, and is loaded with pre-trained models on github. 
+
+We have built some common network structures in the `NN_layers` folder, such as [`vgg_cifar.py`](../NN_models/vgg_cifar.py) used in this example. 
+
+For the CIFAR10 and CIFAR100 datasets, respectively, we tested the accuracy under various vgg variants. Where the parameters of mem_engine and slice_method are shown below:
+```python
+input_slice = (1, 1, 1, 1)
+weight_slice = (1, 1, 1, 1)
+mem_engine = DPETensor(
+    var=0.05,
+    rdac=2**1,
+    g_level=2**1,
+    radc=2**6,
+    weight_quant_gran=(256, 1),
+    input_quant_gran=(1, 256),
+    weight_paral_size=(64, 1),
+    input_paral_size=(1, 64)
+)
 ```

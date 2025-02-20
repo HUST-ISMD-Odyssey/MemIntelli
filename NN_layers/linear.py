@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 from pimpy import DPETensor
 
 class LinearMem(nn.Module):
-    def __init__(self, engine, in_features: int, out_features: int, input_sli_med:[list, tuple], weight_sli_med:[list, tuple],
+    def __init__(self, engine, in_features: int, out_features: int, input_slice:[list, tuple], weight_slice:[list, tuple],
                  bias: bool = True, device=None, dtype=torch.float32, bw_e=None):
         '''
         :param in_features: the input neuron number
@@ -39,8 +39,8 @@ class LinearMem(nn.Module):
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
-        self.weight_slice_method = torch.tensor(weight_sli_med).to(device)
-        self.input_slice_method = torch.tensor(input_sli_med).to(device)
+        self.weight_slice_method = torch.tensor(weight_slice).to(device)
+        self.input_slice_method = torch.tensor(input_slice).to(device)
 
         self.weight_sliced = SlicedData(self.weight_slice_method, device=device, bw_e=bw_e, slice_data_flag=False)
         self.engine = engine
@@ -71,7 +71,7 @@ def _test(mode=1):
         engine = DPETensor(var=0.0, quant_array_gran=(128, 128), quant_input_gran=(1, 128), paral_array_size=(64, 64), paral_input_size=(1, 64))
         xblk = [1, 1, 2, 4]
         mblk = [1, 1, 2, 4]
-        layer = LinearMem(engine,80, 90, bias=False,input_sli_med=xblk, weight_sli_med=mblk, device=device, bw_e=None)
+        layer = LinearMem(engine,80, 90, bias=False,input_slice=xblk, weight_slice=mblk, device=device, bw_e=None)
         output = layer(input)
         output.backward(torch.ones_like(output, dtype=torch.float))
         weight = layer.weight.data
@@ -88,7 +88,7 @@ def _test(mode=1):
 
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         input = torch.randn(500, 100, requires_grad=True).to(device)
-        layer = LinearMem(engine, 100, 300, bias=False, input_sli_med=xblk, weight_sli_med=mblk, device=device, bw_e=None)
+        layer = LinearMem(engine, 100, 300, bias=False, input_slice=xblk, weight_slice=mblk, device=device, bw_e=None)
         output = layer(input)
         #output.backward(torch.ones_like(output, dtype=torch.float))
         weight = layer.weight.data

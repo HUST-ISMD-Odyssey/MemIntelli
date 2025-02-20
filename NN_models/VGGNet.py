@@ -6,8 +6,8 @@
 from typing import Any, cast, Dict, List, Optional, Union
 import torch.nn as nn
 import torch.nn.functional as F
-from .convolution import Conv2dMem
-from .linear import LinearMem
+from NN_layers.convolution import Conv2dMem
+from NN_layers.linear import LinearMem
 import torch
 import torch.utils.model_zoo as model_zoo
 from torchvision.models import vgg16_bn
