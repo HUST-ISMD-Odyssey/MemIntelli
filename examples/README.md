@@ -46,4 +46,63 @@ We use SNR (signal to nosie ratio) to describe the error between ideal result an
 ![Test Losses](./img/SNR_of_INT_and_FP.png)
 
 ## Example 2: [`02_MLP_inference.py`](./02_MLP_inference.py)
-The second example uses a single mlp classifier with MNIST dataset. The defined `MNISTClassifier` adds the parameters `engine`, `input_slice`, `weight_slice`, `bw_e`, `mem_enabled` to the traditional nn.Module. Among them, `engine` is the same as in [`Example 1`](./01_matrix_multiplication.py), `input_slice` and `weight_slice` correspond to the method of dynamic bit-slicing, and `bw_e` determines whether to use INT or FP mode. 
+The second example uses a single mlp classifier with MNIST dataset. The defined `MNISTClassifier` adds the parameters `engine`, `input_slice`, `weight_slice`, `bw_e`, `mem_enabled` to the traditional nn.Module. Among them, `engine` is the same as in [`Example 1`](./01_matrix_multiplication.py), `input_slice` and `weight_slice` correspond to the method of dynamic bit-slicing, and `bw_e` determines whether to use INT or FP mode. What is different is the addition of the `mem_enabled` parameter and the `update_weights` function. When the `mem_enabled` is true, the model replaces `nn.linear` with `LinearMem` which encapsulates the memristive engine.
+```python
+class MNISTClassifier(nn.Module):
+    def __init__(self, engine, input_slice, weight_slice, device, 
+                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        self.flatten = nn.Flatten()
+        self.engine = engine
+        for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
+            if mem_enabled is True:
+                self.layers.append(LinearMem(engine, in_dim, out_dim, input_slice, weight_slice, device=device, bw_e=bw_e))
+            else:
+                self.layers.append(nn.Linear(in_dim, out_dim))
+
+    def forward(self, x):
+        x = self.flatten(x)
+        for layer in self.layers[:-1]:
+            x = F.relu(layer(x))
+        x = self.layers[-1](x)
+        return F.softmax(x, dim=1)
+
+    def update_weights(self):
+        if self.mem_enabled:
+            for layer in self.layers:
+                layer.update_weight()
+```
+Also the `update_weights()` function is very critical, especially if you are loading pre-trained weights, use this function to convert the original weights into quantized sliced weights.
+The network is trained for 100 epoches in software mode and inferenced in memristive mode. The validated accuracy and loss is printed for every epoch, and final test accuracy in memristive mode is also printed:
+```
+Epoch 1/100: 100%|█████████████████████████████████| 235/235 [00:05<00:00, 41.98batch/s, loss=1.5303]
+Epoch 1 - Avg loss: 1.6647, Val accuracy: 90.88%
+...
+Epoch 100/100: 100%|█████████████████████████████████| 235/235 [00:05<00:00, 41.08batch/s, loss=1.4716]
+Epoch 100 - Avg loss: 1.4901, Val accuracy: 97.05%
+Final test accuracy in memristive mode: 96.53%
+```
+
+## Example 3: [`03_MLP_hardware_aware_training.py`](./03_MLP_hardware_aware_training.py)
+The third example is much like the second example, except that it is trained using memristive mode, also known as hardware aware training. 
+```python
+train_model(
+        model,
+        train_loader,
+        test_loader,
+        device,
+        epochs=config["epochs"],
+        lr=config["learning_rate"],
+        mem_enabled=True        # Set mem_enabled=True for memristive mode training
+    )
+```
+The results are shown below:
+```
+Epoch 1/100: 100%|█████████████████████████████████| 235/235 [00:09<00:00, 25.68batch/s, loss=1.6513]
+Epoch 1 - Avg loss: 1.6647, Val accuracy: 82.73%
+...
+Epoch 100/100: 100%|█████████████████████████████████| 235/235 [00:09<00:00, 23.51batch/s, loss=1.5256]
+Epoch 100 - Avg loss: 1.4901, Val accuracy: 96.39%
+Final test accuracy in memristive mode: 96.37%
+```

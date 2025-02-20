@@ -1,11 +1,12 @@
 # -*- coding:utf-8 -*-
-# @File  : 05_ddp_mnist_training.py
+# @File  : 04_mlp_inference_ddp.py
 # @Author: ZZW
 # @Date  : 2025/2/9
-"""Memintelli example 5: Multiple layer inference with MLP on MNIST.
-This example demonstrates the usage of Memintelli with a simple MLP classifier that has been trained in software.
+"""Memintelli example 4: MLP inference with Distributed Data Parallel (DDP).
+This example demonstrates the usage of Memintelli with DDP.
 
-python -m torch.distributed.run --nproc_per_node=2 examples/05_ddp_mnist_training.py 
+The usage of this script is as follows:
+python -m torch.distributed.run --nproc_per_node=2 ./examples/04_mlp_inference_ddp.py 
 """
 
 import os
@@ -64,7 +65,7 @@ class MNISTClassifier(nn.Module):
 
     def update_weights(self):
         """Update weights for all layers."""
-        # 检查模型是否被包裹在 DataParallel 中
+        # Check if model is wrapped in DDP
         if isinstance(self, nn.DataParallel):
             module = self.module
         else:

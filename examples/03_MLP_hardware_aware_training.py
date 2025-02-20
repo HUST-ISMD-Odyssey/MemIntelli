@@ -36,6 +36,7 @@ class MNISTClassifier(nn.Module):
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
         self.engine = engine
+        self.mem_enabled = mem_enabled
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
                 self.layers.append(
@@ -150,7 +151,7 @@ def main():
     config = {
         "data_root": "/dataset/",
         "batch_size": 256,
-        "epochs": 10,
+        "epochs": 100,
         "learning_rate": 0.001,
         "layer_dims": [784, 512, 128, 10],
         "input_slice": (1, 1, 2),
@@ -168,10 +169,10 @@ def main():
         rdac=2**2,
         g_level=2**2,
         radc=2**12,
-        quant_array_gran=(128, 1),
-        quant_input_gran=(1, 128),
-        paral_array_size=(64, 1),
-        paral_input_size=(1, 64)
+        weight_quant_gran=(128, 128),
+        input_quant_gran=(1, 128),
+        weight_paral_size=(64, 64),
+        input_paral_size=(1, 64)
     )
     
     model = MNISTClassifier(
@@ -195,7 +196,6 @@ def main():
     )
 
     model.update_weights()
-    
     final_acc_mem = evaluate(model, test_loader, device)
     print(f"\nFinal test accuracy in mem mode: {final_acc_mem:.2%}")
 

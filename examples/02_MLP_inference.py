@@ -35,6 +35,7 @@ class MNISTClassifier(nn.Module):
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
         self.engine = engine
+        self.mem_enabled = mem_enabled
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
                 self.layers.append(
@@ -149,7 +150,7 @@ def main():
     config = {
         "data_root": "/dataset/",   # Change this to your dataset directory
         "batch_size": 256,
-        "epochs": 10,
+        "epochs": 100,
         "learning_rate": 0.001,
         "layer_dims": [784, 512, 128, 10],
         "input_slice": (1, 1, 2),
