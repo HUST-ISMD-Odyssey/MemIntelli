@@ -27,14 +27,14 @@ weight_slice = torch.tensor([1, 1, 2, 2, 2])
 ```
 Here we use both INT quantization and FP quantization modes, of which the principles are described in the paper: [Zhiwei Zhou et al. (2024) ArPCIM: An Arbitrary-Precision Analog Computing-in-Memory Accelerator With Unified INT/FP Arithmetic. IEEE TCAS-I](https://ieeexplore.ieee.org/abstract/document/10486875).
 
-INT mode `bw_e` should be set to `None` and `slice_data_flag` should be set to `True` for input `SlicedData`.
+In INT mode, `bw_e` should be set to `None` and `slice_data_flag` should be set to `True` for input `SlicedData`.
 ```python
 input_int = SlicedData(input_slice, device=device, bw_e=None, slice_data_flag=True)
 weight_int = SlicedData(weight_slice, device=device, bw_e=None)
 input_int.slice_data_imp(mem_engine,input_data)
 weight_int.slice_data_imp(mem_engine,weight_data)
 ```
-While FP mode `bw_e` should be set to bit width of the exponent bit (e.g. 8 bits for BF16, 5 bits for FP16) and `slice_data_flag` should be set to `True` for input `SlicedData`.
+While in FP mode, `bw_e` should be set to bit width of the exponent bit (e.g. 8 bits for BF16, 5 bits for FP16) and `slice_data_flag` should be set to `True` for input `SlicedData`.
 ```python
 input_fp = SlicedData(input_slice, device=device, bw_e=8, slice_data_flag=True)
 weight_fp = SlicedData(weight_slice, device=device, bw_e=8)
@@ -44,3 +44,6 @@ weight_fp.slice_data_imp(mem_engine,weight_data)
 We use SNR (signal to nosie ratio) to describe the error between ideal result and the actual result, and plot a distribution graph for both cases.
 
 ![Test Losses](./img/SNR_of_INT_and_FP.png)
+
+## Example 2: [`02_MLP_inference.py`](./02_MLP_inference.py)
+The second example uses a single mlp classifier with MNIST dataset. The defined `MNISTClassifier` adds the parameters `engine`, `input_slice`, `weight_slice`, `bw_e`, `mem_enabled` to the traditional nn.Module. Among them, `engine` is the same as in [`Example 1`](./01_matrix_multiplication.py), `input_slice` and `weight_slice` correspond to the method of dynamic bit-slicing, and `bw_e` determines whether to use INT or FP mode. 

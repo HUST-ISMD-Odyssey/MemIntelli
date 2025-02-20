@@ -147,7 +147,7 @@ def evaluate(model, test_loader, device):
 def main():
     # Configuration
     config = {
-        "data_root": "/dataset/",
+        "data_root": "/dataset/",   # Change this to your dataset directory
         "batch_size": 256,
         "epochs": 10,
         "learning_rate": 0.001,
