@@ -25,18 +25,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
 
-    # The following codes are to initialize the matrix engine, where the parameters are the same as the memristor crossbar array. 
-    cim_engine = DPETensor(
+    # The following codes are to initialize the memristive engine, where the parameters are the same as the memristor crossbar array. 
+    mem_engine = DPETensor(
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
         var=0.05,                       # Random Gaussian noise of conductance
         rdac=2**2,                      # Number of DAC resolution 
         g_level=2**2,                   # Number of conductance levels
         radc=2**10,                     # Number of ADC resolution 
-        weight_quant_gran=(128, 128),    # Quantization granularity of the crossbar array
-        input_quant_gran=(1, 128),      # Quantization granularity of the input
-        weight_paral_size=(32, 32),      # The size of the crossbar array used for parallel computation, 
-                                        # where (32, 32) here indicates that the crossbar array is divided into 32x32 sub-arrays for parallel computation
+        weight_quant_gran=(128, 128),   # Quantization granularity of the weight matrix
+        input_quant_gran=(1, 128),      # Quantization granularity of the input matrix
+        weight_paral_size=(32, 32),     # The size of the crossbar array used for parallel computation, 
+                                        # where (32, 32) here indicates that the weight matrix is divided into 32x32 sub-arrays for parallel computation
         input_paral_size=(1, 32)        # The size of the input data used for parallel computation,
-                                        # where (1, 32) here indicates that the input data is divided into 1×32 sub-inputs for parallel computation
+                                        # where (1, 32) here indicates that the input matrix is divided into 1×32 sub-inputs for parallel computation
     )
 
     # Initialize input and matrix data
@@ -47,22 +49,22 @@ def main():
     input_slice = torch.tensor([1, 1, 2, 2, 2])
     weight_slice = torch.tensor([1, 1, 2, 2, 2])
 
-    # Create sliced data objects and slice the input and weight data according to the CIM engine's parameters 
+    # Create sliced data objects and slice the input and weight data according to the memristive engine's parameters 
     # INT mode
     input_int = SlicedData(input_slice, device=device, bw_e=None, slice_data_flag=True)
     weight_int = SlicedData(weight_slice, device=device, bw_e=None)
-    input_int.slice_data_imp(cim_engine,input_data)
-    weight_int.slice_data_imp(cim_engine,weight_data)
+    input_int.slice_data_imp(mem_engine,input_data)
+    weight_int.slice_data_imp(mem_engine,weight_data)
     # FP mode
     input_fp = SlicedData(input_slice, device=device, bw_e=8, slice_data_flag=True)
     weight_fp = SlicedData(weight_slice, device=device, bw_e=8)
-    input_fp.slice_data_imp(cim_engine,input_data)
-    weight_fp.slice_data_imp(cim_engine,weight_data)
+    input_fp.slice_data_imp(mem_engine,input_data)
+    weight_fp.slice_data_imp(mem_engine,weight_data)
 
-    # Perform matrix multiplication using software and the CIM engine with INT and FP modes. The functions are equivalent to torch.matmul(input_data, weight_data) 
+    # Perform matrix multiplication using software and the memristive engine with INT and FP modes. The functions are equivalent to torch.matmul(input_data, weight_data) 
     result_ideal = torch.matmul(input_data, weight_data).cpu().numpy()
-    result_int = cim_engine(input_int, weight_int).cpu().numpy()
-    result_fp = cim_engine(input_fp, weight_fp).cpu().numpy()
+    result_int = mem_engine(input_int, weight_int).cpu().numpy()
+    result_fp = mem_engine(input_fp, weight_fp).cpu().numpy()
     
     # Calculate the Signal-to-Noise Ratio (SNR) of the result and plot the scatter plot of the expected and measured values 
     snr_int = SNR(result_int, result_ideal)
