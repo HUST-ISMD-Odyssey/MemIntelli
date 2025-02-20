@@ -1,5 +1,4 @@
 from setuptools import setup, find_packages
-from pkg_resources import parse_requirements
 
 setup(
     name = "Memintelli",
@@ -9,5 +8,6 @@ setup(
     description = "Memristive Intelligient Computing Simulator",
     license = "MIT",
     url = "https://github.com/zzzzzzzzzzw/Memintelli",
+    zip_safe = False,
     packages = find_packages(),
 )
