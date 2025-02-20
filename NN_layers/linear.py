@@ -42,7 +42,7 @@ class LinearMem(nn.Module):
         self.weight_slice_method = torch.tensor(weight_sli_med).to(device)
         self.input_slice_method = torch.tensor(input_sli_med).to(device)
 
-        self.weight_sliced = SlicedData(self.weight_slice_method, device=device, bw_e=bw_e, input_en=False)
+        self.weight_sliced = SlicedData(self.weight_slice_method, device=device, bw_e=bw_e, slice_data_flag=False)
         self.engine = engine
         self.weight_sliced.slice_data_imp(engine, self.weight.detach().t())        
 
@@ -57,7 +57,7 @@ class LinearMem(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,input_en=True)
+        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,slice_data_flag=True)
         input_sliced.slice_data_imp(self.engine, input.detach())
         return linear_mem_func(self.engine, input, self.weight, input_sliced, self.weight_sliced, self.bias)
 

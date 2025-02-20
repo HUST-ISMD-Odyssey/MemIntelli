@@ -1,9 +1,9 @@
 # -*- coding:utf-8 -*-
-# @File  : 01_mutiple_layer_inference.py
+# @File  : 03_mlp_hardware_aware_training.py
 # @Author: ZZW
-# @Date  : 2025/2/9
-"""Memintelli example 1: Multiple layer inference with MLP on MNIST.
-This example demonstrates the usage of Memintelli with a simple MLP classifier that has been trained in software.
+# @Date  : 2025/2/20
+"""Memintelli example 3: MLP with hardware aware training.
+This example demonstrates Memintelli using hardware-aware training.
 """
 
 import os
@@ -14,11 +14,8 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 from time import time
 from torch.nn import functional as F
-
 # Add project root directory to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(project_root)
-
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from NN_layers.linear import LinearMem
 from pimpy.memmat_tensor import DPETensor
 
@@ -39,8 +36,6 @@ class MNISTClassifier(nn.Module):
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
         self.engine = engine
-        self.mem_enabled = mem_enabled
-        # Create hidden layers
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
                 self.layers.append(
@@ -59,7 +54,8 @@ class MNISTClassifier(nn.Module):
         return F.softmax(x, dim=1)
 
     def update_weights(self):
-        """Update weights for all layers."""
+        """Convert the model weights (FP32) to PIM sliced_weights. 
+        ***This function is very important for loading as well as updating pre-training weights in inference or training.***            """
         if self.mem_enabled:
             for layer in self.layers:
                 layer.update_weight()
@@ -93,7 +89,7 @@ def train_model(model, train_loader, test_loader, device,
         device: Computation device
         epochs: Number of training epochs
         lr: Learning rate
-        mem_enabled: Enable memory updates
+        mem_enabled: If mem_enabled is True, the model will use the memristive engine for memristive weight updates
     """
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
@@ -166,7 +162,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, test_loader = load_mnist(config["data_root"], config["batch_size"])
     
-    # Initialize memory engine and model
+    # Initialize Initialize memristive engine and model
     mem_engine = DPETensor(
         var=0.02,
         rdac=2**2,
@@ -185,10 +181,9 @@ def main():
         device=device,
         layer_dims=config["layer_dims"],
         bw_e=config["bw_e"],
-        mem_enabled=True,
+        mem_enabled=True,       # Set mem_enabled=True for memristive mode
     ).to(device)
 
-    # Train and evaluate
     train_model(
         model,
         train_loader,

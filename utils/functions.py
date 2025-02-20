@@ -1,85 +1,14 @@
 # -*- coding: utf-8 -*-
-# @Time    : 2022/6/29 15:08
+# @Time    : 2025/02/20 15:16
 # @Author  : Zhou
 # @FileName: functions.py
-# @Software: PyCharm
-import inspect
+'''
+This file is used to quantize the data and convert the data to the INT or block floating point (BFP) data.
+Also, it provides some functions to describe the error of the quantization.
+'''
+
 import numpy as np
 import torch
-from prettytable import PrettyTable
-
-def generate_noise(row, col, **kwargs):
-    try:
-        mat = np.random.normal(kwargs['mean'], kwargs['std'], (row, col))
-        return mat
-    except:
-        mat = np.random.random((row,col))
-        return mat
-
-def show_params_table(params, header=False):
-    """
-    Args:
-        circuit_params: the params of the circuit, 2-D list
-        the format of the params follows ['prams', 'values', 'description']
-        each sub-list keeps x single param, and the 2-D list keeps all the params.
-
-    Returns:None
-    """
-    if header:
-        table_header = params.pop(0)
-    else:
-        table_header = ['prams', 'values', 'description']
-    table = PrettyTable(table_header)
-    for param in params:
-        table.add_row(param)
-    print(table)
-
-def legal_location(location, limitation):
-    try:
-        if len(location) == 1:
-            return  location < limitation
-        else:
-            return np.all((location - limitation) < 0)
-    except:
-        raise ValueError(location)
-
-
-def is_index(index):
-    """
-    judge the input index if is legal index
-    Args:
-        index: the input index
-
-    Returns:
-        bool
-    """
-    # not modified, uses the Built-in index judgment
-    if index is None:
-        return False
-    return True
-
-def retrieve_name(var):
-    '''
-    utils:
-    get back the name of variables
-    '''
-    callers_local_vars = inspect.currentframe().f_back.f_locals.items()
-    return [var_name for var_name, var_val in callers_local_vars if var_val is var]
-
-def use_engine(engine):
-    """
-    x decorator to use the engine
-    Args:
-        engine: the engine to be used
-
-    Returns:
-
-    """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            return func(engine, *args, **kwargs)
-        return wrapper
-    return decorator
 
 def quant_map_tensor(mat, blk = (1, 1, 2, 4), max_abs_temp_mat = None):
     '''
@@ -119,13 +48,20 @@ def quant_map_tensor(mat, blk = (1, 1, 2, 4), max_abs_temp_mat = None):
     return data_int, mat_data, max_mat, e_bias
 
 def bfp_map_tensor(mat, blk=(1, 1, 2, 4), bw_e=8,  max_abs_temp_mat = None):
-    
-    
     '''
-    convert the data to the quantized data with block floating point
-    :param mat: 5D tensor (batch,num_divide_row_a,num_divide ,m, n)
-    :param blk: slice method
-    :return:
+    convert the data to the block floating point (bfp) data
+
+    Parameters:
+        mat (torch.tensor): (batch, num_divide_row, num_divide_col, m, n)
+        blk (tuple): slice method
+        bw_e (int): the bit width of the exponent
+        max_abs_temp_mat (torch.tensor): the max value of the mat 
+
+    Returns:
+        data_int (torch.Tensor): the quantized data, the shape is (batch, num_divide_row_a, num_divide, num_slice ,m , n)
+        mat_data (torch.Tensor): the data quantized by the slice method, the shape is the same as the data
+        max_mat (torch.Tensor): the max value of the data for each quantization granularity, the shape is (batch, num_divide_row_a, num_divide, 1, 1)
+        e_bias (torch.Tensor): None, reserved for the block floating point (BFP)
     '''
     quant_data_type = torch.uint8 if max(blk) <= 8 else torch.int16
     assert blk[0] == 1
@@ -143,19 +79,19 @@ def bfp_map_tensor(mat, blk=(1, 1, 2, 4), bw_e=8,  max_abs_temp_mat = None):
     clip_up = (2 ** (bits - 1) - 1).to(mat.device)      
     clip_down = (-2 ** (bits - 1)).to(mat.device)
     matq = torch.clip(matq, clip_down, clip_up)  # round&clip，clip到-2^(bits-1)~2^(bits-1)-1
-    mat_data = matq * 2. ** (e_bias + 2 - bits)  # 存储的是反量化后的数据
+    mat_data = matq * 2. ** (e_bias + 2 - bits)  # mat_data is the dequantized data, which is used to calculate the error of quantization
     location = torch.where(matq < 0)
     matq[location] = 2. ** bits + matq[location]
 
-    if len(mat.shape) == 5:
-        data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]), device=mat.device, dtype=quant_data_type)
-        b = 0
-        for idx in range(len(blk)):
-            data_int[:, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) /(2**b)
-            b += blk[-1 - idx]
+    data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]), device=mat.device, dtype=quant_data_type)
+    b = 0
+    for idx in range(len(blk)):
+        data_int[:, :, :, idx, :, :] = ((matq - matq % 2 ** b) % 2 ** (b + blk[-1 - idx])) /(2**b)
+        b += blk[-1 - idx]
    
     return data_int, mat_data, max_mat, e_bias
 
+'''----------------------------------Some functions to describe the error----------------------------------'''
 def ABSE(ytest, ypred):
     return np.sum(np.abs((ytest-ypred)/ytest))/(ytest.shape[0] * ytest.shape[1])
 
@@ -168,6 +104,7 @@ def MSE(ytest, ypred):
 def SNR(ytest, ypred):
     return 10*np.log10(np.sum(ytest**2)/np.sum((ytest-ypred)**2))
 
+'''----------------------------------Old Version of dec_2FP_map in Pimpy----------------------------------'''
 def dec_2FP_map(decmat, blk=(1, 2, 2, 2, 4, 4, 4, 4), bw_e=8):
     newblk = [1, 1] + blk
     num_blk = len(newblk)
@@ -227,7 +164,4 @@ def dec_2FP_map_tensor(decmat, blk, bw_e):
     return torch.clamp(torch.Tensor([e_bia]), -e_max_range, e_max_range), b
 
 
-if __name__ == '__main__':
-    mat = generate_noise(20,20, mean=1, std=0.2)
-    print(mat)
 

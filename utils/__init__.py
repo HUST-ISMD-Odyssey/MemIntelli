@@ -5,5 +5,4 @@
 # @Software: PyCharm
 
 from .functions import *
-from .config import *
 from .data_formats import *

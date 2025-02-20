@@ -1,8 +1,8 @@
 # -*- coding:utf-8 -*-
-# @File  : 01_mutiple_layer_inference.py
+# @File  : 02_mlp_inference.py
 # @Author: ZZW
-# @Date  : 2025/2/9
-"""Memintelli example 1: Multiple layer inference with MLP on MNIST.
+# @Date  : 2025/2/20
+"""Memintelli example 2: MLP inference using Memintelli.
 This example demonstrates the usage of Memintelli with a simple MLP classifier that has been trained in software.
 """
 
@@ -15,7 +15,6 @@ from tqdm import tqdm
 from torch.nn import functional as F
 # Add project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from NN_layers.linear import LinearMem
 from pimpy.memmat_tensor import DPETensor
 
@@ -36,7 +35,6 @@ class MNISTClassifier(nn.Module):
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
         self.engine = engine
-        # Create hidden layers
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
                 self.layers.append(
@@ -55,7 +53,8 @@ class MNISTClassifier(nn.Module):
         return F.softmax(x, dim=1)
 
     def update_weights(self):
-        """Update weights for all layers."""
+        """Convert the model weights (FP32) to PIM sliced_weights. 
+        ***This function is very important for loading as well as updating pre-training weights in inference or training.***            """
         if self.mem_enabled:
             for layer in self.layers:
                 layer.update_weight()
@@ -89,7 +88,7 @@ def train_model(model, train_loader, test_loader, device,
         device: Computation device
         epochs: Number of training epochs
         lr: Learning rate
-        mem_enabled: Enable memory updates
+        mem_enabled: If mem_enabled is True, the model will use the memristive engine for memristive weight updates
     """
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
@@ -162,29 +161,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, test_loader = load_mnist(config["data_root"], config["batch_size"])
     
-    # Initialize memory engine and model
-    mem_engine = DPETensor(
-        var=0.02,
-        rdac=2**2,
-        g_level=2**2,
-        radc=2**12,
-        quant_array_gran=(128, 128),
-        quant_input_gran=(1, 128),
-        paral_array_size=(64, 64),
-        paral_input_size=(1, 64)
-    )
-    
+    # Initialize the software model with mem_enabled=False
     model = MNISTClassifier(
-        engine=mem_engine,
+        engine=None,
         input_slice=config["input_slice"],
         weight_slice=config["weight_slice"],
         device=device,
         layer_dims=config["layer_dims"],
         bw_e=config["bw_e"],
-        mem_enabled=False,
+        mem_enabled=False,      # Set mem_enabled=False for software model
     ).to(device)
 
-    # Train and evaluate
+    # Train the software model
     train_model(
         model,
         train_loader,
@@ -195,7 +183,19 @@ def main():
         mem_enabled=False
     )
 
-    model_mem = MNISTClassifier(
+    # Initialize memristive engine and model
+    mem_engine = DPETensor(
+        var=0.02,
+        rdac=2**2,
+        g_level=2**2,
+        radc=2**12,
+        weight_quant_gran=(128, 128),
+        input_quant_gran=(1, 128),
+        weight_paral_size=(64, 64),
+        input_paral_size=(1, 64)
+    )
+
+    mdoel_mem = MNISTClassifier(
         engine=mem_engine,
         input_slice=config["input_slice"],
         weight_slice=config["weight_slice"],
@@ -203,12 +203,12 @@ def main():
         layer_dims=config["layer_dims"],
         mem_enabled=True
     ).to(device)
-
-    model_mem.load_state_dict(model.state_dict())
-    model_mem.update_weights()
+    # Load the pre-trained weights from the software model and use update_weights() to convert them to memristive sliced_weights
+    mdoel_mem.load_state_dict(model.state_dict())
+    mdoel_mem.update_weights()
     
-    final_acc_mem = evaluate(model_mem, test_loader, device)
-    print(f"\nFinal test accuracy in mem mode: {final_acc_mem:.2%}")
+    final_acc_mem = evaluate(mdoel_mem, test_loader, device)
+    print(f"\nFinal test accuracy in memristive mode: {final_acc_mem:.2%}")
 
 if __name__ == "__main__":
     main()

@@ -73,6 +73,7 @@ class MNISTClassifier(nn.Module):
         if module.mem_enabled:
             for layer in module.layers:
                 layer.update_weight()
+                
 def load_mnist(data_root, batch_size=256):
     """Load MNIST dataset with normalization."""
     transform = transforms.Compose([
@@ -201,10 +202,10 @@ def main():
         rdac=2**2,
         g_level=2**2,
         radc=2**12,
-        quant_array_gran=(128, 1),
-        quant_input_gran=(1, 128),
-        paral_array_size=(64, 1),
-        paral_input_size=(1, 64),
+        weight_quant_gran=(128, 1),
+        input_quant_gran=(1, 128),
+        weight_paral_size=(64, 1),
+        input_paral_size=(1, 64),
         device=torch.device("cuda")
     )
     model = MNISTClassifier(
