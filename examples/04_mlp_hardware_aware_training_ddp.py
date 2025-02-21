@@ -178,18 +178,17 @@ def evaluate(model, test_loader, device):
 
 def main():
     # Configuration
-    config = {
-        "data_root": "/dataset/",
-        "batch_size": 256,
-        "epochs": 10,
-        "learning_rate": 0.001,
-        "layer_dims": [784, 512, 128, 10],
-        "input_slice": (1, 1, 2),
-        "weight_slice": (1, 1, 2),
-        "bw_e": 8,
-    }
+    data_root = "/dataset/"   # Change this to your dataset directory
+    batch_size = 256
+    epochs = 10
+    learning_rate = 0.001
+    layer_dims = [784, 512, 128, 10]
+    # Slicing configuration and INT/FP mode settings
+    input_slice = (1, 1, 2)
+    weight_slice = (1, 1, 2)
+    bw_e = 8
 
-    train_loader, test_loader = load_mnist(config["data_root"], config["batch_size"])
+    train_loader, test_loader = load_mnist(data_root, batch_size)
     
     # Initialize memory engine and model
     mem_engine = DPETensor(
@@ -210,11 +209,11 @@ def main():
 
     model = MNISTClassifier(
         engine=mem_engine,
-        input_slice=config["input_slice"],
-        weight_slice=config["weight_slice"],
+        input_slice=input_slice,
+        weight_slice=weight_slice,
         device=torch.device("cuda"),
-        layer_dims=config["layer_dims"],
-        bw_e=config["bw_e"],
+        layer_dims=layer_dims,
+        bw_e=bw_e,
         mem_enabled=True
     ).to(local_rank)    # Explicit device placement
 
@@ -231,8 +230,8 @@ def main():
         train_loader,
         test_loader,
         device=torch.device("cuda"),
-        epochs=config["epochs"],
-        lr=config["learning_rate"],
+        epochs=epochs,
+        lr=learning_rate,
         mem_enabled=True
     )
     dist.destroy_process_group()    # Clean up distributed process group

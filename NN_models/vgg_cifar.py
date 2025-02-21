@@ -45,32 +45,18 @@ class VGG_CIFAR(nn.Module):
         cfg (str): Architecture configuration key
         num_classes (int): Number of output classes
         mem_enabled (bool): If mem_enabled is True, the model will use the memristive engine for memristive weight updates
-        engine (Optional[Any]): Memory engine for Mem layers
-        input_slice (Optional[torch.Tensor, list]): Input tensor slicing configuration
-        weight_slice (Optional[torch.Tensor, list]): Weight tensor slicing configuration
-        device (Optional[Any]): Computation device (CPU/GPU)
-        bw_e (Optional[Any]): if bw_e is None, the memristive engine is INT mode, otherwise, the memristive engine is FP mode (bw_e is the bitwidth of the exponent)
+        mem_args: Dictionary containing memristive parameters
     """
     def __init__(
         self,   
         cfg: str = 'vgg16_bn',
         num_classes: int = 10,
         mem_enabled: bool = True,
-        engine: Optional[Any] = None,
-        input_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
-        weight_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
-        device: Optional[Any] = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-        bw_e: Optional[Any] = None
+        mem_args: Optional[Dict[str, Any]] = None
     ):
         super().__init__()
         self.mem_enabled = mem_enabled
-        self.mem_args = {
-            "engine": engine,
-            "input_slice": input_slice,
-            "weight_slice": weight_slice,
-            "device": device,
-            "bw_e": bw_e
-        }
+        self.mem_args = mem_args if self.mem_enabled else {}
         self.features = self._make_layers(cfgs[cfg])
         self.classifier = self._make_classifier(num_classes)
 
@@ -132,7 +118,11 @@ def vgg_cifar_zoo(
     num_classes: int = 10,
     pretrained: bool = False,
     mem_enabled: bool = False,
-    **mem_kwargs: Any
+    engine: Optional[Any] = None,
+    input_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
+    weight_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
+    device: Optional[Any] = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    bw_e: Optional[Any] = None
 ) -> VGG_CIFAR:
     """
     VGG model factory for CIFAR datasets.
@@ -141,17 +131,29 @@ def vgg_cifar_zoo(
         model_name (str): Model architecture name
         num_classes (int): Number of output classes
         pretrained (bool): Load pretrained weights
-        mem_enabled (bool): Enable memory-efficient layers
-        **mem_kwargs: Arguments for memory-efficient layers
+        mem_enabled (bool): Enable memristive mode
+        engine (Optional[Any]): Memory engine for Mem layers
+        input_slice (Optional[torch.Tensor, list]): Input tensor slicing configuration
+        weight_slice (Optional[torch.Tensor, list]): Weight tensor slicing configuration
+        device (Optional[Any]): Computation device (CPU/GPU)
+        bw_e (Optional[Any]): if bw_e is None, the memristive engine is INT mode, otherwise, the memristive engine is FP mode (bw_e is the bitwidth of the exponent)
 
     Returns:
         VGG_CIFAR: Configured VGG model instance
     """
+    mem_args = {
+        "engine": engine,
+        "input_slice": input_slice,
+        "weight_slice": weight_slice,
+        "device": device,
+        "bw_e": bw_e
+    } if mem_enabled else {}
+    
     model = VGG_CIFAR(
         cfg=model_name,
         num_classes=num_classes,
         mem_enabled=mem_enabled,
-        **mem_kwargs
+        mem_args=mem_args
     )
 
     if pretrained:

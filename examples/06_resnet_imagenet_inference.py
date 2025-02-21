@@ -1,8 +1,8 @@
 # -*- coding:utf-8 -*-
-# @File  : 05_vgg_cifar_inference.py
+# @File  : 06_resnet_imagenet_inference.py
 # @Author: ZZW
 # @Date  : 2025/2/20
-"""Memintelli example 5: VGG in Cifar dataset using Memintelli.
+"""Memintelli example 6: ResNet in Imagenet dataset using Memintelli.
 This example demonstrates the usage of Memintelli with vgg to load pre-trained model.
 """
 import os
@@ -14,28 +14,22 @@ from tqdm import tqdm
 from torch.nn import functional as F
 # Add project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from NN_models import vgg_cifar_zoo
+from NN_models import ResNet_zoo
 from pimpy.memmat_tensor import DPETensor
 
-def load_dataset(data_root, batch_size=256, num_classes=10):
+def load_dataset(data_root, batch_size=256):
     """Load dataset with normalization."""
     # Create dataset directories if not exist
     os.makedirs(data_root, exist_ok=True)
-    if num_classes == 10:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.201])
-        ])
-        train_set = datasets.CIFAR10(data_root, train=True, download=True, transform=transform)
-        test_set = datasets.CIFAR10(data_root, train=False, download=True, transform=transform)
-    elif num_classes == 100:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.507, 0.4865, 0.4409], std=[0.2673, 0.2564, 0.2761])
-        ])
-        train_set = datasets.CIFAR100(data_root, train=True, download=True, transform=transform)
-        test_set = datasets.CIFAR100(data_root, train=False, download=True, transform=transform)
-
+    transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    train_set = datasets.ImageNet(root=data_root, split='train', transform=transform)
+    test_set = datasets.ImageNet(root=data_root, split='val', transform=transform)
+    
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
     
@@ -110,27 +104,25 @@ def evaluate(model, test_loader, device):
     
 def main():
     # Configuration
-    data_root = "/dataset/"   # Change this to your dataset directory
+    data_root = "D:/dataset/imagenet"   # Change this to your dataset directory
     batch_size = 16
     learning_rate = 0.001
     # Slicing configuration and INT/FP mode settings
-    input_slice = (1, 1, 1, 1)
-    weight_slice = (1, 1, 1, 1)
+    input_slice = (1, 1, 2)
+    weight_slice = (1, 1, 2)
     bw_e = None
 
-    mem_enabled = True       # Select the memrsitive mode or software mode
-    model_name = "vgg13_bn"   # Select the model name
-    num_classes = 10          # if 10, it is cifar10, if 100, it is cifar100
+    model_name = 'resnet18'     # Select the model name
+    mem_enabled = False          # Select the memrsitive mode or software mode
 
-    # Initialize components
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    train_loader, test_loader = load_dataset(data_root, batch_size, num_classes=num_classes)
+    train_loader, test_loader = load_dataset(data_root, batch_size)
 
     mem_engine = DPETensor(
         var=0.05,
-        rdac=2**1,
-        g_level=2**1,
-        radc=2**6,
+        rdac=2**2,
+        g_level=2**2,
+        radc=2**10,
         weight_quant_gran=(256, 1),
         input_quant_gran=(1, 256),
         weight_paral_size=(64, 1),
@@ -138,12 +130,11 @@ def main():
         device=device
     )
 
-    model = vgg_cifar_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
-    engine=mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e).to(device)
+    model = ResNet_zoo(model_name=model_name, pretrained=True, mem_enabled=mem_enabled, 
+    engine = mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e).to(device)
     model.update_weight()
-    
-    final_acc_mem = evaluate(model, test_loader, device)
-    print(f"\nFinal test accuracy {model_name} in CIFAR-{num_classes}: {final_acc_mem:.2%}")
+    final_acc = evaluate(model, test_loader, device)
+    print(f"\nFinal test accuracy of {model_name} in Imagenet: {final_acc:.2%}")
 
 if __name__ == "__main__":
     main()

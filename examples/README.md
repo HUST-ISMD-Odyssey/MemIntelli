@@ -132,7 +132,7 @@ Final test accuracy in memristive mode: 96.52%
 ```
 
 ## Example 5: [`05_vgg_cifar_inference.py`](./05_vgg_cifar_inference.py)
-As a typical CNN, `VGG` is used in this example on the `CIFAR10` and `CIFAR100` datasets, and is loaded with pre-trained models on github. 
+As a typical CNN, `VGG` is used in this example on the `CIFAR10` and `CIFAR100` datasets, and is loaded with pre-trained models on github [`https://github.com/chenyaofo/pytorch-cifar-models`](https://github.com/chenyaofo/pytorch-cifar-models). 
 
 We have built some common network structures in the `NN_layers` folder, such as [`vgg_cifar.py`](../NN_models/vgg_cifar.py) used in this example. 
 
@@ -151,3 +151,23 @@ mem_engine = DPETensor(
     input_paral_size=(1, 64)
 )
 ```
+The results are shown follow:
+
+`CIFAR-10`
+| Model | Ideal Acc.(%) | Actual Acc.(%) | Acc. loss(%) | 
+| :---: | :---: | :---: | :---: |
+| vgg11_bn | 92.79 | 90.98 | 1.81 |
+| vgg13_bn | 94.00 | 93.13 | 0.87 |
+| vgg16_bn | 94.16 | 93.16 | 1.00 |
+| vgg19_bn | 93.91 | 92.91 | 1.00 |
+
+`CIFAR-100`
+| Model | Ideal Acc.(%) | Actual Acc.(%) | Acc. loss(%) | 
+| :---: | :---: | :---: | :---: |
+| vgg11_bn | 70.78 | 65.53 | 5.25 |
+| vgg13_bn | 74.63 | 71.43 | 3.20 |
+| vgg16_bn | 74.00 | 70.71 | 3.29 |
+| vgg19_bn | 73.87 | 69.97 | 3.90 |
+
+## Example 6: [`06_resnet_imagenet_inference.py`](./06_resnet_imagenet_inference.py)
+In this example, we run the `ResNet` model on the ImageNet dataset which is the most classical benchmark in the field of PIM.
