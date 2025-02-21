@@ -75,7 +75,7 @@ class VGG_CIFAR(nn.Module):
                 layers.extend([
                     conv_layer,
                     nn.BatchNorm2d(cast(int, v)),
-                    nn.ReLU(inplace=True)
+                    nn.ReLU()
                 ])
                 in_channels = cast(int, v)
 
@@ -89,10 +89,10 @@ class VGG_CIFAR(nn.Module):
 
         return nn.Sequential(
             linear(in_features=512, out_features=512, **mem_args),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Dropout(),
             linear(in_features=512, out_features=512, **mem_args),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Dropout(),
             linear(in_features=512, out_features=num_classes, **mem_args)
         )

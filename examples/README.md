@@ -169,5 +169,8 @@ The results are shown follow:
 | vgg16_bn | 74.00 | 70.71 | 3.29 |
 | vgg19_bn | 73.87 | 69.97 | 3.90 |
 
-## Example 6: [`06_resnet_imagenet_inference.py`](./06_resnet_imagenet_inference.py)
-In this example, we run the `ResNet` model on the ImageNet dataset which is the most classical benchmark in the field of PIM.
+## Example 6: [`06_vgg16bn_cifar100_finetune.py`](./06_vgg16bn_cifar100_finetune.py)
+In this example, we finetuned the `vgg16bn` model on the `CIFAR100` dataset to minimize the loss of accuracy due to hardware deployment. We use `torch.optim.lr_scheduler.CosineAnnealingLR` to decay the learning rate to enable the model converge better. The curve of accuracy with epoch is shown below: where epoch=0 corresponds to the inference accuracy under direct deployment.
+
+## Example 7: [`07_resnet_imagenet_inference.py`](./07_resnet_imagenet_inference.py)
+In this example, we run the `ResNet` model on the ImageNet dataset which is the most classical benchmark in the field of PIM. 59.67% accuracy (baseline: 69.76)

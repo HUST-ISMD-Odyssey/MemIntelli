@@ -3,14 +3,9 @@
 # @Author: Zhou
 # @Date  : 2023/3/22
 
-from .mlp import *
 from .lenet5 import *
-from .alexnet import *
 from .vgg_cifar import *
-from .VGGNet import *
-from .resnet18_cifar import *
 from .ResNet import *
-from .ViT import *
+from .DeiT import *
 from .Bert import *
-from .qwen import *
-from .qwen_new import *
+

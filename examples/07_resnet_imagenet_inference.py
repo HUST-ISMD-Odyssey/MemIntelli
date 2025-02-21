@@ -1,9 +1,9 @@
 # -*- coding:utf-8 -*-
-# @File  : 06_resnet_imagenet_inference.py
+# @File  : 07_resnet_imagenet_inference.py
 # @Author: ZZW
 # @Date  : 2025/2/20
-"""Memintelli example 6: ResNet in Imagenet dataset using Memintelli.
-This example demonstrates the usage of Memintelli with vgg to load pre-trained model.
+"""Memintelli example 7: ResNet in Imagenet dataset using Memintelli.
+This example demonstrates the usage of Memintelli with resnet to load pre-trained model.
 """
 import os
 import sys
@@ -93,12 +93,16 @@ def evaluate(model, test_loader, device):
     total = 0
     
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Evaluating", unit="batch"):
+        progress_bar = tqdm(test_loader, desc="Evaluating", unit="batch")
+        for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+            # Update progress bar with current accuracy
+            accuracy = 100 * correct / total
+            progress_bar.set_postfix(accuracy=f'{accuracy:.2f}%')
     
     return correct / total
     
@@ -106,10 +110,9 @@ def main():
     # Configuration
     data_root = "D:/dataset/imagenet"   # Change this to your dataset directory
     batch_size = 16
-    learning_rate = 0.001
     # Slicing configuration and INT/FP mode settings
-    input_slice = (1, 1, 2)
-    weight_slice = (1, 1, 2)
+    input_slice = (1, 1, 2, 2)
+    weight_slice = (1, 1, 2, 2)
     bw_e = None
 
     model_name = 'resnet18'     # Select the model name
