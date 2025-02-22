@@ -5,7 +5,7 @@
 """Memintelli example 3: MLP with hardware aware training.
 This example demonstrates Memintelli using hardware-aware training.
 """
-
+import os
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms

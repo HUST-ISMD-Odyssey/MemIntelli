@@ -5,6 +5,7 @@
 """Memintelli example 6: VGG16_bn on CIFAR-100 data set finetuning using Memintelli.
 This example demonstrates the usage of Memintelli with vgg to finetune pre-trained model.
 """
+import os
 import matplotlib.pyplot as plt
 import torch
 from torch import nn, optim

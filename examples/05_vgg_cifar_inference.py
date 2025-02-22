@@ -5,7 +5,7 @@
 """Memintelli example 5: VGG in Cifar dataset using Memintelli.
 This example demonstrates the usage of Memintelli with vgg to load pre-trained model.
 """
-
+import os
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms

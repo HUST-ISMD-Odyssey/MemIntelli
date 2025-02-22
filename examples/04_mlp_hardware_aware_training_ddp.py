@@ -9,7 +9,7 @@ The usage of this script is as follows:
 python -m torch.distributed.run --nproc_per_node=2 ./examples/04_mlp_hardware_aware_training_ddp.py 
 """
 
-
+import os
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms

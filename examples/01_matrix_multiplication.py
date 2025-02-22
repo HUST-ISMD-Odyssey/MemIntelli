@@ -7,7 +7,7 @@
 # This example demonstrates how to perform matrix multiplication using a CIM simulation framework. It includes initialization of CIM engines, 
 # bit-slicing, and computation of the Signal-to-Noise Ratio (SNR) to evaluate the result.
 # =============================================================================
-
+import os
 import torch
 import numpy as np
 from matplotlib import pyplot as plt

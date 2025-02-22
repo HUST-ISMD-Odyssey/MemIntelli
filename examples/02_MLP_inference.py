@@ -5,7 +5,7 @@
 """Memintelli example 2: MLP inference using Memintelli.
 This example demonstrates the usage of Memintelli with a simple MLP classifier that has been trained in software.
 """
-
+import os
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms
