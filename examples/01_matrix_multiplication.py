@@ -14,8 +14,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 # Add project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from Memintelli.pimpy.memmat_tensor import DPETensor
-from Memintelli.utils.data_formats import SlicedData
+from memintelli.pimpy.memmat_tensor import DPETensor
+from memintelli.utils.data_formats import SlicedData
 
 # Define the Signal-to-Noise Ratio (SNR)
 def SNR(p_actual, p_ideal):

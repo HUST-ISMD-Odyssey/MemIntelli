@@ -1,6 +1,7 @@
-numpy
+numpy == 1.26.3
 matplotlib
 tqdm
+scipy
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch == 2.1.1+cu118
 torchvision == 0.16.1+cu118

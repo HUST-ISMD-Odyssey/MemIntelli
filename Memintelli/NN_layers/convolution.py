@@ -11,7 +11,7 @@ import time
 import sys,os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import SlicedData, SliceMethod
-from NN_layers.functions import conv1d_mem_func, conv2d_mem_func
+from functions import conv1d_mem_func, conv2d_mem_func
 from pimpy import DPETensor
 
 class Conv1dMem(nn.Module):

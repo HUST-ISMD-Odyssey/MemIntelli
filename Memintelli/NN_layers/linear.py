@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import torch
 import math
 from utils import SlicedData, SliceMethod, ABSE
-from NN_layers.functions import linear_mem_func
+from functions import linear_mem_func
 from matplotlib import pyplot as plt
 from pimpy import DPETensor
 
