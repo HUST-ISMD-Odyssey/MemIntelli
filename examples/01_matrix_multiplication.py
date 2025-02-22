@@ -7,13 +7,11 @@
 # This example demonstrates how to perform matrix multiplication using a CIM simulation framework. It includes initialization of CIM engines, 
 # bit-slicing, and computation of the Signal-to-Noise Ratio (SNR) to evaluate the result.
 # =============================================================================
-import os
-import sys
+
 import torch
 import numpy as np
 from matplotlib import pyplot as plt
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from memintelli.pimpy.memmat_tensor import DPETensor
 from memintelli.utils.data_formats import SlicedData
 

@@ -12,7 +12,7 @@ import os
 import sys
 # Add project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from NN_layers import Conv2dMem, LinearMem, SliceMethod
+from memintelli.NN_layers import Conv2dMem, LinearMem, SliceMethod
 
 # Pretrained model URLs
 model_urls = {

@@ -5,7 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from NN_layers import Conv2dMem, LinearMem
+from memintelli.NN_layers import Conv2dMem, LinearMem
 from typing import Union, List, Dict, Any, cast, Optional, Type
 
 class LeNet5(nn.Module):

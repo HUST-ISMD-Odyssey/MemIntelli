@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.hub import load_state_dict_from_url
 from typing import Dict, Any
-from NN_layers import Conv2dMem, LinearMem, SliceMethod
+from memintelli.NN_layers import Conv2dMem, LinearMem, SliceMethod
 
 cfgs: Dict[str, Dict[str, Any]] = {
     'bert_tiny': {'hidden_size': 128, 'num_layers': 2, 'num_heads': 2, 'intermediate_size': 512},

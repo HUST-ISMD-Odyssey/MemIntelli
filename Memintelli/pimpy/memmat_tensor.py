@@ -9,12 +9,8 @@ Optimizes matrix multiplication processes using tensor operations, supporting bo
 '''
 import torch
 from matplotlib import pyplot as plt
-import sys
-import os 
-#Add paremt directory to the system path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.functions import quant_map_tensor, bfp_map_tensor, SNR
-from utils.data_formats import SlicedData
+from memintelli.utils.functions import quant_map_tensor, bfp_map_tensor, SNR
+from memintelli.utils.data_formats import SlicedData
 import math
 import time
 

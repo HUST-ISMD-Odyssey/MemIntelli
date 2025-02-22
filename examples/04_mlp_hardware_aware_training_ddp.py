@@ -9,8 +9,7 @@ The usage of this script is as follows:
 python -m torch.distributed.run --nproc_per_node=2 ./examples/04_mlp_hardware_aware_training_ddp.py 
 """
 
-import os
-import sys
+
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms
@@ -20,8 +19,7 @@ from torch.nn import functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from memintelli.NN_layers.linear import LinearMem
 from memintelli.pimpy.memmat_tensor import DPETensor
 

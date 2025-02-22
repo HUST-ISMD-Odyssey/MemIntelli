@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.hub import load_state_dict_from_url
 from typing import Optional, Union, Dict, Any
-from NN_layers import LinearMem
+from memintelli.NN_layers import LinearMem
 
 # Pretrained model URLs
 model_urls = {

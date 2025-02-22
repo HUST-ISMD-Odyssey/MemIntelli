@@ -2,16 +2,12 @@
 # @File  : vgg_cifar.py
 # @Author: ZZW
 # @Date  : 2025/02/20
-import os
-import sys
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Union, List, Dict, Any, cast, Optional
 from torch.hub import load_state_dict_from_url
-from NN_layers import Conv2dMem, LinearMem
+from memintelli.NN_layers import Conv2dMem, LinearMem
 
 # Pretrained model URLs
 cifar_pretrained_urls = {

@@ -4,17 +4,15 @@
 # @Date  : 2023/3/22
 import os
 import sys
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
 import math
-from utils import SlicedData, SliceMethod, ABSE
-from functions import linear_mem_func
+from memintelli.utils import SlicedData, SliceMethod, ABSE
+from memintelli.NN_layers.functions import linear_mem_func
 from matplotlib import pyplot as plt
-from pimpy import DPETensor
+from memintelli.pimpy import DPETensor
 
 class LinearMem(nn.Module):
     def __init__(self, engine, in_features: int, out_features: int, input_slice:[list, tuple], weight_slice:[list, tuple],
