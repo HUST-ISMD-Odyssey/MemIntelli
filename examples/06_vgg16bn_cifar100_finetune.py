@@ -5,16 +5,13 @@
 """Memintelli example 6: VGG16_bn on CIFAR-100 data set finetuning using Memintelli.
 This example demonstrates the usage of Memintelli with vgg to finetune pre-trained model.
 """
-import os
-import sys
 import matplotlib.pyplot as plt
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms
 from tqdm import tqdm
 from torch.nn import functional as F
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from memintelli.NN_models import vgg_cifar_zoo
 from memintelli.pimpy.memmat_tensor import DPETensor
 

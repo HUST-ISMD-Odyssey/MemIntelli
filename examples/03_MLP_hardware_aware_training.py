@@ -6,16 +6,13 @@
 This example demonstrates Memintelli using hardware-aware training.
 """
 
-import os
-import sys
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms
 from tqdm import tqdm
 from time import time
 from torch.nn import functional as F
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from memintelli.NN_layers.linear import LinearMem
 from memintelli.pimpy.memmat_tensor import DPETensor
 

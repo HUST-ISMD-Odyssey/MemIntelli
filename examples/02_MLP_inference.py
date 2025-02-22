@@ -6,15 +6,12 @@
 This example demonstrates the usage of Memintelli with a simple MLP classifier that has been trained in software.
 """
 
-import os
-import sys
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms
 from tqdm import tqdm
 from torch.nn import functional as F
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from memintelli.NN_layers.linear import LinearMem
 from memintelli.pimpy.memmat_tensor import DPETensor
 

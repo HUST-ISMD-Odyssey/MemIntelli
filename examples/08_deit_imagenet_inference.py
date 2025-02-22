@@ -5,8 +5,6 @@
 """Memintelli example 6: ResNet in Imagenet dataset using Memintelli.
 This example demonstrates the usage of Memintelli with vgg to load pre-trained model.
 """
-import os
-import sys
 import torch
 from torch import nn, optim
 from torchvision import datasets, transforms
