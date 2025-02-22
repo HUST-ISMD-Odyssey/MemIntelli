@@ -21,11 +21,9 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 # Add project root directory to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(project_root)
-
-from NN_layers.linear import LinearMem
-from pimpy.memmat_tensor import DPETensor
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from Memintelli.NN_layers.linear import LinearMem
+from Memintelli.pimpy.memmat_tensor import DPETensor
 
 class MNISTClassifier(nn.Module):
     """MLP classifier for MNIST with configurable layers.

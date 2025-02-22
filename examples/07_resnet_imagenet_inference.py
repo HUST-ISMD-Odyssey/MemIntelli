@@ -14,8 +14,8 @@ from tqdm import tqdm
 from torch.nn import functional as F
 # Add project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from NN_models import ResNet_zoo
-from pimpy.memmat_tensor import DPETensor
+from Memintelli.NN_models import ResNet_zoo
+from Memintelli.pimpy.memmat_tensor import DPETensor
 
 def load_dataset(data_root, batch_size=256):
     """Load dataset with normalization."""

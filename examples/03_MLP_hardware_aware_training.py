@@ -16,8 +16,8 @@ from time import time
 from torch.nn import functional as F
 # Add project root directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from NN_layers.linear import LinearMem
-from pimpy.memmat_tensor import DPETensor
+from Memintelli.NN_layers.linear import LinearMem
+from Memintelli.pimpy.memmat_tensor import DPETensor
 
 class MNISTClassifier(nn.Module):
     """MLP classifier for MNIST with configurable layers.

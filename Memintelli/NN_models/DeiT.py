@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch.hub import load_state_dict_from_url
 from typing import Optional, Union, Dict, Any
 from NN_layers import LinearMem
+import timm
 
 # Pretrained model URLs
 model_urls = {

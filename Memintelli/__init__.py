@@ -7,5 +7,5 @@
 from __future__ import absolute_import
 from .utils import *
 from .NN_layers import *
+from .NN_models import *
 from .pimpy import *
-from .examples import *

@@ -176,4 +176,10 @@ In this example, we finetuned the `vgg16bn` model on the `CIFAR100` dataset to m
 In this example, we run the `ResNet` model on the ImageNet dataset which is the most classical benchmark in the field of PIM. 59.67% accuracy (baseline: 69.76)
 
 ## Example 8: [`08_deit_imagenet_inference.py`](./08_deit_imagenet_inference.py)
-Memintelli not only supports MLP, CNN, but also Transformer. Except for `qkv` which we use GPU to accelerate, the rest of the linear layer, MLP can be deployed on Memintelli. 
+Memintelli not only supports MLP, CNN, but also Transformer. Except for `qkv` which we use GPU to accelerate, the rest of the linear layer, MLP can be deployed on Memintelli. We run the `DeiT` model from github [`https://github.com/facebookresearch/deit/blob/main/README_deit.md`](https://github.com/facebookresearch/deit/blob/main/README_deit.md). 
+| Model | Ideal Acc.(%) | Actual Acc.(%) | Acc. loss(%) | 
+| :---: | :---: | :---: | :---: |
+| deit_tiny_patch16_224 | 72.02 | 68.36 | 3.66 |
+| deit_small_patch16_224 | 79.72 | 71.43 | 3.20 |
+| deit_base_patch16_224 | 81.74 | 70.71 | 3.29 |
+|
