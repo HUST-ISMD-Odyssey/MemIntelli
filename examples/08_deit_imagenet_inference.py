@@ -109,12 +109,12 @@ def main():
     data_root = "/dataset/imagenet"   # Change this to your dataset directory
     batch_size = 16
     # Slicing configuration and INT/FP mode settings
-    input_slice = (1, 1, 2)
-    weight_slice = (1, 1, 2)
+    input_slice = (1, 1, 2, 2)
+    weight_slice = (1, 1, 2, 2)
     bw_e = None
 
     model_name = 'deit_base_patch16_224'     # Select the model name
-    mem_enabled = False          # Select the memrsitive mode or software mode
+    mem_enabled = True          # Select the memrsitive mode or software mode
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     train_loader, test_loader = load_dataset(data_root, batch_size)

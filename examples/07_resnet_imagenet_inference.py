@@ -114,7 +114,7 @@ def main():
     bw_e = None
 
     model_name = 'resnet18'     # Select the model name
-    mem_enabled = False          # Select the memrsitive mode or software mode
+    mem_enabled = True          # Select the memrsitive mode or software mode
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     train_loader, test_loader = load_dataset(data_root, batch_size)

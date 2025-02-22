@@ -8,10 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 from typing import Union, List, Dict, Any, cast, Optional, Type
-import os
-import sys
-# Add project root directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memintelli.NN_layers import Conv2dMem, LinearMem, SliceMethod
 
 # Pretrained model URLs

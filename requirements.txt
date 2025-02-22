@@ -1,4 +1,4 @@
-numpy == 1.26.3
+numpy>=1.22,<2
 matplotlib
 tqdm
 --extra-index-url https://download.pytorch.org/whl/cu118
