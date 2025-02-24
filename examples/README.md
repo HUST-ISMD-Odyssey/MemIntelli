@@ -180,6 +180,6 @@ Memintelli not only supports MLP, CNN, but also Transformer. Except for `qkv` wh
 | Model | Ideal Acc.(%) | Actual Acc.(%) | Acc. loss(%) | 
 | :---: | :---: | :---: | :---: |
 | deit_tiny_patch16_224 | 72.02 | 68.36 | 3.66 |
-| deit_small_patch16_224 | 79.72 | - | - |
-| deit_base_patch16_224 | 81.74 | - |- |
+| deit_small_patch16_224 | 79.72 | 78.10 | 1.62 |
+| deit_base_patch16_224 | 81.74 | 81.05 | 0.69 |
 |
