@@ -7,7 +7,7 @@ _Memintelli_ is an open source Python-based framework, that provides an importan
 ## Installation
 1. Get the tool from GitHub
 ```
-git clone https://github.com/zzzzzzzzzzw/Memintelli.git
+git clone https://github.com/HUST-ISMD-Odyssey/Memintelli.git
 ```
 2. Installing from pypi
 The preferred way to install this package is by using the [`Python package index`](https://pypi.org/project/memintelli/)
