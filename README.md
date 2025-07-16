@@ -9,12 +9,13 @@ _Memintelli_ is an open source Python-based framework, that provides an importan
 ```
 git clone https://github.com/HUST-ISMD-Odyssey/Memintelli.git
 ```
-2. Installing from pypi
-The preferred way to install this package is by using the [`Python package index`](https://pypi.org/project/memintelli/)
+2. Install
+The preferred way to install this package is by using 
 ```
-pip install memintelli
+cd Memintelli
+pip install .
 ```
-3. Installing the necessary packages
+3. Installing the necessary packages(optional)
 ```
 pip install numpy==1.26 matplotlib tqdm
 ```
