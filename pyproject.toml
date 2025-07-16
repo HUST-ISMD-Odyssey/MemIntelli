@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memintelli"
+version = "0.0.1.3"
+authors = [
+    {name = "Odysseia", email = "1548384176@qq.com"},
+]
+description = "Memristive Intelligient Computing Simulator"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.7"
+dependencies = [
+    "numpy>=1.22,<2",
+    "matplotlib",
+    "tqdm",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/zzzzzzzzzzw/Memintelli"
+Repository = "https://github.com/zzzzzzzzzzw/Memintelli"
+
+[project.optional-dependencies]
+cuda = [
+    "torch==2.1.1+cu118",
+    "torchvision==0.16.1+cu118", 
+    "torchaudio==2.1.1+cu118",
+]
+
+[tool.setuptools.packages.find]
+include = ["memintelli*"]
+
+[tool.setuptools]
+zip-safe = false 
