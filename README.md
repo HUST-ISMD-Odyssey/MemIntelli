@@ -16,7 +16,7 @@ pip install memintelli
 ```
 3. Installing the necessary packages
 ```
-pip install numpy==1.26, matplotlib, tqdm
+pip install numpy==1.26 matplotlib tqdm
 ```
 * `numpy` needs to be installed version `<2.0.0` due to compatibility issues. 
 
