@@ -109,7 +109,7 @@ def evaluate(model, test_loader, device):
 def main():
     # Configuration
     data_root = "/dataset/"   # Change this to your dataset directory
-    batch_size = 16
+    batch_size = 32
     learning_rate = 0.001
     # Slicing configuration and INT/FP mode settings
     input_slice = (1, 1, 1, 1)
@@ -125,19 +125,21 @@ def main():
     train_loader, test_loader = load_dataset(data_root, batch_size, num_classes=num_classes)
 
     mem_engine = DPETensor(
-        var=0.05,
-        rdac=2**1,
-        g_level=2**1,
-        radc=2**6,
-        weight_quant_gran=(256, 1),
-        input_quant_gran=(1, 256),
-        weight_paral_size=(64, 1),
-        input_paral_size=(1, 64),
-        device=device
-    )
-
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
+        write_variation=0.0,          # Write variation
+        rate_stuck_HGS=0.00,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.00,          # Rate of stuck at LGS
+        read_variation=0.05,           # Read variation
+        vnoise=0.0,                   # Random Gaussian noise of voltage
+        rdac=2**1,                      # Number of DAC resolution 
+        g_level=2**1,                   # Number of conductance levels
+        radc=2**6
+        )
+    
     model = vgg_cifar_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
-    engine=mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e).to(device)
+    engine=mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e,
+    input_paral_size=(1, 64), weight_paral_size=(64, 1), input_quant_gran=(1, 256), weight_quant_gran=(256, 1)).to(device)
     model.update_weight()
     
     final_acc_mem = evaluate(model, test_loader, device)

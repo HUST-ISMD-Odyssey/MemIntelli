@@ -35,7 +35,9 @@ class MNISTClassifier(nn.Module):
         mem_enabled: If mem_enabled is True, the model will use the memristive engine for memristive weight updates
     """
     def __init__(self, engine, input_slice, weight_slice, device, 
-                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True):
+                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True, 
+                 input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                 input_quant_gran=(1, 64), weight_quant_gran=(64, 64)):
         super().__init__()
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
@@ -45,7 +47,8 @@ class MNISTClassifier(nn.Module):
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
                 self.layers.append(LinearMem(engine, in_dim, out_dim, input_slice, weight_slice,
-                             device=device, bw_e=bw_e))
+                             device=device, bw_e=bw_e, input_paral_size=input_paral_size, weight_paral_size=weight_paral_size, 
+                             input_quant_gran=input_quant_gran, weight_quant_gran=weight_quant_gran))
             else:
                 self.layers.append(nn.Linear(in_dim, out_dim))
 
@@ -188,16 +191,18 @@ def main():
     
     # Initialize memory engine and model
     mem_engine = DPETensor(
-        var=0.02,
-        rdac=2**2,
-        g_level=2**2,
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
+        write_variation=0.05,          # Write variation
+        rate_stuck_HGS=0.005,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.005,          # Rate of stuck at LGS
+        read_variation={0:0.05, 1:0.05, 2:0.05, 3:0.05},           # Read variation
+        vnoise=0.05,                   # Random Gaussian noise of voltage
+        rdac=2**2,                      # Number of DAC resolution 
+        g_level=2**2,                   # Number of conductance levels
         radc=2**12,
-        weight_quant_gran=(128, 1),
-        input_quant_gran=(1, 128),
-        weight_paral_size=(64, 1),
-        input_paral_size=(1, 64),
-        device=torch.device("cuda")
-    )
+        device=torch.device("cuda:0")
+        )
     
     local_rank = int(os.environ["LOCAL_RANK"]) # Get local_rank from environment variable (unique per process on a machine)
     torch.cuda.set_device(local_rank) # Set current CUDA device to match this process's local rank
@@ -210,7 +215,9 @@ def main():
         device=torch.device("cuda"),
         layer_dims=layer_dims,
         bw_e=bw_e,
-        mem_enabled=True
+        mem_enabled=True,
+        input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+        input_quant_gran=(1, 64), weight_quant_gran=(64, 64)
     ).to(local_rank)    # Explicit device placement
 
     if torch.cuda.device_count() > 1:

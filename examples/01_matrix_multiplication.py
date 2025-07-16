@@ -12,7 +12,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from memintelli.pimpy.memmat_tensor import DPETensor
-from memintelli.utils.data_formats import SlicedData
+from memintelli.pimpy.data_formats import SlicedData
 
 # Define the Signal-to-Noise Ratio (SNR)
 def SNR(p_actual, p_ideal):
@@ -26,35 +26,39 @@ def main():
     mem_engine = DPETensor(
         HGS=1e-5,                       # High conductance state
         LGS=1e-8,                       # Low conductance state
-        var=0.05,                       # Random Gaussian noise of conductance
+        write_variation=0.0,          # Write variation
+        rate_stuck_HGS=0.001,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.000,          # Rate of stuck at LGS
+        read_variation={0:0.05, 1:0.05, 2:0.05, 3:0.05},           # Read variation
+        vnoise=0.05,                   # Random Gaussian noise of voltage
         rdac=2**2,                      # Number of DAC resolution 
         g_level=2**2,                   # Number of conductance levels
-        radc=2**10,                     # Number of ADC resolution 
-        weight_quant_gran=(128, 128),   # Quantization granularity of the weight matrix
-        input_quant_gran=(1, 128),      # Quantization granularity of the input matrix
-        weight_paral_size=(32, 32),     # The size of the crossbar array used for parallel computation, 
-                                        # where (32, 32) here indicates that the weight matrix is divided into 32x32 sub-arrays for parallel computation
-        input_paral_size=(1, 32)        # The size of the input data used for parallel computation,
-                                        # where (1, 32) here indicates that the input matrix is divided into 1×32 sub-inputs for parallel computation
-    )
+        radc=2**12
+        )
 
     # Initialize input and matrix data
     input_data = torch.randn(400, 500, device=device)
     weight_data = torch.randn(500, 600, device=device)
-
     # Define dynamic bit-slicing parameters for input and weight
     input_slice = torch.tensor([1, 1, 2, 2, 2])
     weight_slice = torch.tensor([1, 1, 2, 2, 2])
 
+    weight_quant_gran = (128, 128)   # Quantization granularity of the weight matrix
+    input_quant_gran = (1, 128)      # Quantization granularity of the input matrix
+    weight_paral_size = (32, 32)     # The size of the crossbar array used for parallel computation, 
+                                    # where (32, 32) here indicates that the weight matrix is divided into 32x32 sub-arrays for parallel computation
+    input_paral_size = (1, 32)        # The size of the input data used for parallel computation,
+                                        # where (1, 32) here indicates that the input matrix is divided into 1×32 sub-inputs for parallel computation
+
     # Create sliced data objects and slice the input and weight data according to the memristive engine's parameters 
     # INT mode
-    input_int = SlicedData(input_slice, device=device, bw_e=None, slice_data_flag=True)
-    weight_int = SlicedData(weight_slice, device=device, bw_e=None)
+    input_int = SlicedData(input_slice, device=device, bw_e=None, is_weight=False, paral_size=input_paral_size, quant_gran=input_quant_gran)
+    weight_int = SlicedData(weight_slice, device=device, bw_e=None, is_weight=True, paral_size=weight_paral_size, quant_gran=weight_quant_gran)
     input_int.slice_data_imp(mem_engine,input_data)
     weight_int.slice_data_imp(mem_engine,weight_data)
     # FP mode
-    input_fp = SlicedData(input_slice, device=device, bw_e=8, slice_data_flag=True)
-    weight_fp = SlicedData(weight_slice, device=device, bw_e=8)
+    input_fp = SlicedData(input_slice, device=device, bw_e=8, is_weight=False, paral_size=input_paral_size, quant_gran=input_quant_gran)
+    weight_fp = SlicedData(weight_slice, device=device, bw_e=8, is_weight=True, paral_size=weight_paral_size, quant_gran=weight_quant_gran)
     input_fp.slice_data_imp(mem_engine,input_data)
     weight_fp.slice_data_imp(mem_engine,weight_data)
 

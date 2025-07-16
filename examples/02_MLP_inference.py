@@ -25,9 +25,15 @@ class MNISTClassifier(nn.Module):
         layer_dims: List of layer dimensions [input_dim, hidden_dims..., output_dim]
         bw_e: if bw_e is None, the memristive engine is INT mode, otherwise, the memristive engine is FP mode (bw_e is the bitwidth of the exponent)
         mem_enabled: If mem_enabled is True, the model will use the memristive engine for memristive weight updates
+        input_paral_size: The size of the input data used for parallel computation, where (1, 32) here indicates that the input matrix is divided into 1×32 sub-inputs for parallel computation
+        weight_paral_size: The size of the crossbar array used for parallel computation, where (32, 32) here indicates that the weight matrix is divided into 32x32 sub-arrays for parallel computation
+        input_quant_gran: The quantization granularity of the input data
+        weight_quant_gran: The quantization granularity of the weight data
     """
     def __init__(self, engine, input_slice, weight_slice, device, 
-                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True):
+                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True, 
+                 input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                 input_quant_gran=(1, 64), weight_quant_gran=(64, 64)):
         super().__init__()
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
@@ -37,7 +43,8 @@ class MNISTClassifier(nn.Module):
             if mem_enabled is True:
                 self.layers.append(
                     LinearMem(engine, in_dim, out_dim, input_slice, weight_slice,
-                             device=device, bw_e=bw_e)
+                             device=device, bw_e=bw_e, input_paral_size=input_paral_size, weight_paral_size=weight_paral_size, 
+                             input_quant_gran=input_quant_gran, weight_quant_gran=weight_quant_gran)
                 )
             else:
                 self.layers.append(nn.Linear(in_dim, out_dim))
@@ -52,7 +59,7 @@ class MNISTClassifier(nn.Module):
 
     def update_weight(self):
         """Convert the model weights (FP32) to PIM sliced_weights. 
-        ***This function is very important for loading as well as updating pre-training weights in inference or training.***            """
+        This function is very important for loading as well as updating pre-training weights in inference or training."""
         if self.mem_enabled:
             for layer in self.layers:
                 layer.update_weight()
@@ -146,7 +153,7 @@ def main():
     # Configuration
     data_root = "/dataset/"   # Change this to your dataset directory
     batch_size = 256
-    epochs = 10
+    epochs = 5
     learning_rate = 0.001
     layer_dims = [784, 512, 128, 10]
     # Slicing configuration and INT/FP mode settings
@@ -182,15 +189,17 @@ def main():
 
     # Initialize memristive engine and model
     mem_engine = DPETensor(
-        var=0.02,
-        rdac=2**2,
-        g_level=2**2,
-        radc=2**12,
-        weight_quant_gran=(128, 128),
-        input_quant_gran=(1, 128),
-        weight_paral_size=(64, 64),
-        input_paral_size=(1, 64)
-    )
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
+        write_variation=0.05,          # Write variation
+        rate_stuck_HGS=0.005,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.005,          # Rate of stuck at LGS
+        read_variation={0:0.05, 1:0.05, 2:0.05, 3:0.05},           # Read variation
+        vnoise=0.05,                   # Random Gaussian noise of voltage
+        rdac=2**2,                      # Number of DAC resolution 
+        g_level=2**2,                   # Number of conductance levels
+        radc=2**12
+        )
 
     mdoel_mem = MNISTClassifier(
         engine=mem_engine,
@@ -198,7 +207,9 @@ def main():
         weight_slice=weight_slice,
         device=device,
         layer_dims=layer_dims,
-        mem_enabled=True
+        mem_enabled=True,
+        input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+        input_quant_gran=(1, 64), weight_quant_gran=(64, 64)
     ).to(device)
     # Load the pre-trained weights from the software model and use update_weight() to convert them to memristive sliced_weights
     mdoel_mem.load_state_dict(model.state_dict())

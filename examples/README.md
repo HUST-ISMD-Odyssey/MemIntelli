@@ -7,17 +7,15 @@ In this example, a simple matrix multiplication is demonstrated by Memintelli. I
 mem_engine = DPETensor(
         HGS=1e-5,                       # High conductance state
         LGS=1e-8,                       # Low conductance state
-        var=0.05,                       # Random Gaussian noise of conductance
+        write_variation=0.0,          # Write variation
+        rate_stuck_HGS=0.001,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.000,          # Rate of stuck at LGS
+        read_variation={0:0.05, 1:0.05, 2:0.05, 3:0.05},           # Read variation
+        vnoise=0.05,                   # Random Gaussian noise of voltage
         rdac=2**2,                      # Number of DAC resolution 
         g_level=2**2,                   # Number of conductance levels
-        radc=2**10,                     # Number of ADC resolution 
-        weight_quant_gran=(128, 128),   # Quantization granularity of the weight matrix
-        input_quant_gran=(1, 128),      # Quantization granularity of the input matrix
-        weight_paral_size=(32, 32),     # The size of the crossbar array used for parallel computation, 
-                                        # where (32, 32) here indicates that the weight matrix is divided into 32x32 sub-arrays for parallel computation
-        input_paral_size=(1, 32)        # The size of the input data used for parallel computation,
-                                        # where (1, 32) here indicates that the input matrix is divided into 1×32 sub-inputs for parallel computation
-    )
+        radc=2**12
+        )
 ```
 And the dynamic bit-slicing method is used for inputs and weights, which can combine the accuracy of SLC (single-level cell) and the efficiency of MlC (multi-level cell), and the details can be viewed on the paper: [Shao-Qin Tong et al. (2024) Energy-Efficient Brain Floating Point Convolutional Neural Network Using Memristors. IEEE TED](https://ieeexplore.ieee.org/abstract/document/10486875).
 ```python
@@ -27,17 +25,28 @@ weight_slice = torch.tensor([1, 1, 2, 2, 2])
 ```
 Here we use both INT quantization and FP quantization modes, of which the principles are described in the paper: [Zhiwei Zhou et al. (2024) ArPCIM: An Arbitrary-Precision Analog Computing-in-Memory Accelerator With Unified INT/FP Arithmetic. IEEE TCAS-I](https://ieeexplore.ieee.org/abstract/document/10486875).
 
-In INT mode, `bw_e` should be set to `None` and `slice_data_flag` should be set to `True` for input `SlicedData`.
+Quantization granularity (`quant_gran`) refers to the size of the matrices involved in the quantization, while parallel size (`paral_size`) refers to the size of the crossbar array used for parallel computation, where input_paral_size [1] = weight_paral_size [0] 
 ```python
-input_int = SlicedData(input_slice, device=device, bw_e=None, slice_data_flag=True)
-weight_int = SlicedData(weight_slice, device=device, bw_e=None)
+weight_quant_gran = (128, 128)   # Quantization granularity of the weight matrix
+input_quant_gran = (1, 128)      # Quantization granularity of the input matrix
+weight_paral_size = (32, 32)     # The size of the crossbar array used for parallel computation, 
+                                # where (32, 32) here indicates that the weight matrix is divided into 32x32 sub-arrays for parallel computation
+input_paral_size = (1, 32)        # The size of the input data used for parallel computation,
+                                    # where (1, 32) here indicates that the input matrix is divided into 1×32 sub-inputs for parallel computation
+
+```
+
+In INT mode, `bw_e` should be set to `None`. `is_weight` should be set to `False` for input `SlicedData` and `True` for weight `SlicedData`.
+```python
+input_int = SlicedData(input_slice, device=device, bw_e=None, is_weight=False, paral_size=input_paral_size, quant_gran=input_quant_gran)
+weight_int = SlicedData(weight_slice, device=device, bw_e=None, is_weight=True, paral_size=weight_paral_size, quant_gran=weight_quant_gran)
 input_int.slice_data_imp(mem_engine,input_data)
 weight_int.slice_data_imp(mem_engine,weight_data)
 ```
-While in FP mode, `bw_e` should be set to bit width of the exponent bit (e.g. 8 bits for BF16, 5 bits for FP16) and `slice_data_flag` should be set to `True` for input `SlicedData`.
+While in FP mode, `bw_e` should be set to bit width of the exponent bit (e.g. 8 bits for BF16, 5 bits for FP16). 
 ```python
-input_fp = SlicedData(input_slice, device=device, bw_e=8, slice_data_flag=True)
-weight_fp = SlicedData(weight_slice, device=device, bw_e=8)
+input_fp = SlicedData(input_slice, device=device, bw_e=8, is_weight=False, paral_size=input_paral_size, quant_gran=input_quant_gran)
+weight_fp = SlicedData(weight_slice, device=device, bw_e=8, is_weight=True, paral_size=weight_paral_size, quant_gran=weight_quant_gran)
 input_fp.slice_data_imp(mem_engine,input_data)
 weight_fp.slice_data_imp(mem_engine,weight_data)
 ```
@@ -50,14 +59,21 @@ The second example uses a single mlp classifier with MNIST dataset. The defined 
 ```python
 class MNISTClassifier(nn.Module):
     def __init__(self, engine, input_slice, weight_slice, device, 
-                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True):
+                 layer_dims=[784, 512, 128, 10], bw_e=None, mem_enabled=True, 
+                 input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                 input_quant_gran=(1, 64), weight_quant_gran=(64, 64)):
         super().__init__()
         self.layers = nn.ModuleList()
         self.flatten = nn.Flatten()
         self.engine = engine
+        self.mem_enabled = mem_enabled
         for in_dim, out_dim in zip(layer_dims[:-1], layer_dims[1:]):
             if mem_enabled is True:
-                self.layers.append(LinearMem(engine, in_dim, out_dim, input_slice, weight_slice, device=device, bw_e=bw_e))
+                self.layers.append(
+                    LinearMem(engine, in_dim, out_dim, input_slice, weight_slice,
+                             device=device, bw_e=bw_e, input_paral_size=input_paral_size, weight_paral_size=weight_paral_size, 
+                             input_quant_gran=input_quant_gran, weight_quant_gran=weight_quant_gran)
+                )
             else:
                 self.layers.append(nn.Linear(in_dim, out_dim))
 
@@ -68,7 +84,9 @@ class MNISTClassifier(nn.Module):
         x = self.layers[-1](x)
         return F.softmax(x, dim=1)
 
-    def update_weights(self):
+    def update_weight(self):
+        """Convert the model weights (FP32) to PIM sliced_weights. 
+        This function is very important for loading as well as updating pre-training weights in inference or training."""
         if self.mem_enabled:
             for layer in self.layers:
                 layer.update_weight()
@@ -92,9 +110,9 @@ train_model(
         train_loader,
         test_loader,
         device,
-        epochs=config["epochs"],
-        lr=config["learning_rate"],
-        mem_enabled=True        # Set mem_enabled=True for memristive mode training
+        epochs=epochs,
+        lr=learning_rate,
+        mem_enabled=True
     )
 ```
 The results are shown below:
@@ -141,15 +159,20 @@ For the CIFAR10 and CIFAR100 datasets, respectively, we tested the accuracy unde
 input_slice = (1, 1, 1, 1)
 weight_slice = (1, 1, 1, 1)
 mem_engine = DPETensor(
-    var=0.05,
-    rdac=2**1,
-    g_level=2**1,
-    radc=2**6,
-    weight_quant_gran=(256, 1),
-    input_quant_gran=(1, 256),
-    weight_paral_size=(64, 1),
-    input_paral_size=(1, 64)
-)
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
+        write_variation=0.0,          # Write variation
+        rate_stuck_HGS=0.00,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.00,          # Rate of stuck at LGS
+        read_variation=0.05,           # Read variation
+        vnoise=0.0,                   # Random Gaussian noise of voltage
+        rdac=2**1,                      # Number of DAC resolution 
+        g_level=2**1,                   # Number of conductance levels
+        radc=2**6
+        )
+model = vgg_cifar_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
+    engine=mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e,
+    input_paral_size=(1, 64), weight_paral_size=(64, 1), input_quant_gran=(1, 256), weight_quant_gran=(256, 1)).to(device)
 ```
 The results are shown follow:
 
