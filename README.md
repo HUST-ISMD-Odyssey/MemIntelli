@@ -14,7 +14,7 @@ git clone https://github.com/HUST-ISMD-Odyssey/Memintelli.git
 cd Memintelli
 pip install .
 ```
-1. Installing the necessary packages(optional)
+3. (optional) Installing the necessary packages
 ```
 pip install numpy==1.26 matplotlib tqdm
 ```
