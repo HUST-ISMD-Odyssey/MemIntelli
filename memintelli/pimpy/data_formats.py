@@ -5,7 +5,7 @@
 import copy
 import torch
 import math
-from utils import quant_map_tensor, bfp_map_tensor
+from memintelli.pimpy.utils import quant_map_tensor, bfp_map_tensor
 
 class SlicedData(object):
     """

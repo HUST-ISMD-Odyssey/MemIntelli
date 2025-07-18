@@ -12,8 +12,8 @@ import math
 
 import torch
 from matplotlib import pyplot as plt
-from utils import SNR, dot_high_dim
-from data_formats import SlicedData
+from memintelli.pimpy.utils import SNR, dot_high_dim
+from memintelli.pimpy.data_formats import SlicedData
 
 import time
 
