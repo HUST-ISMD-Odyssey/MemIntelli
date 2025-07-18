@@ -10,12 +10,13 @@ import math
 import time
 import sys,os
 
-from memintelli.utils import SlicedData, SliceMethod
+from memintelli.pimpy.data_formats import SlicedData
+from memintelli.pimpy.utils import ABSE
 from memintelli.NN_layers.functions import conv1d_mem_func, conv2d_mem_func
 from memintelli.pimpy import DPETensor
 
 class Conv1dMem(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size,  input_slice:SliceMethod, weight_slice:SliceMethod,
+    def __init__(self, in_channels, out_channels, kernel_size,  input_slice:[list, tuple], weight_slice:[list, tuple],
                  stride=1, padding=0, dilation=1, groups=1, bias=True, device=None, dtype=None):
         super(Conv1dMem, self).__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}

@@ -5,7 +5,8 @@
 
 import torch
 import torch.nn.functional as F
-from memintelli.utils import SliceMethod, SlicedData
+from memintelli.pimpy.data_formats import  SlicedData
+from memintelli.pimpy.utils import Slicedmethod, ABSE
 import time
 from matplotlib import pyplot as plt
 

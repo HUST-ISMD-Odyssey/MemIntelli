@@ -9,7 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 import math
-from memintelli.utils import SlicedData, SliceMethod, ABSE
+from memintelli.pimpy.data_formats import SlicedData
+from memintelli.pimpy.utils import ABSE
 from memintelli.NN_layers.functions import linear_mem_func
 from matplotlib import pyplot as plt
 from memintelli.pimpy import DPETensor
