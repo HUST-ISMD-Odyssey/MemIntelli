@@ -228,7 +228,11 @@ def deit_zoo(
     input_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
     weight_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
     device: Optional[Any] = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    bw_e: Optional[Any] = None
+    bw_e: Optional[Any] = None,
+    input_paral_size: Optional[Union[torch.Tensor, list]] = (1, 32),
+    weight_paral_size: Optional[Union[torch.Tensor, list]] = (32, 32),
+    input_quant_gran: Optional[Union[torch.Tensor, list]] = (1, 64),
+    weight_quant_gran: Optional[Union[torch.Tensor, list]] = (64, 64)
 ) -> DeiT:
     """
     DeiT model factory

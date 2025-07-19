@@ -11,7 +11,6 @@ import time
 import sys,os
 
 from memintelli.pimpy.data_formats import SlicedData
-from memintelli.pimpy.utils import ABSE
 from memintelli.NN_layers.functions import conv1d_mem_func, conv2d_mem_func
 from memintelli.pimpy import DPETensor
 
@@ -52,8 +51,9 @@ class Conv1dMem(nn.Module):
 
 class Conv2dMem(nn.Module):
     def __init__(self, engine, in_channels, out_channels, kernel_size, input_slice:[list, tuple, torch.Tensor],
-                 weight_slice:[list, tuple], stride=1, padding=0, dilation=1, bw_e=None, 
-                 bias=True, device=None, dtype=None):
+                 weight_slice:[list, tuple], stride=1, padding=0, dilation=1,bias=True, device=None, dtype=None,
+                  bw_e=None, input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                  input_quant_gran=(1, 32), weight_quant_gran=(32, 32)):
         super(Conv2dMem, self).__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(Conv2dMem, self).__init__()
@@ -76,9 +76,10 @@ class Conv2dMem(nn.Module):
         self.weight_slice_method = torch.tensor(weight_slice).to(device)
         self.input_slice_method = torch.tensor(input_slice).to(device)
 
-        self.weight_sliced = SlicedData(self.weight_slice_method,
-                                        device=device,
-                                        bw_e=bw_e, slice_data_flag=False)
+        self.input_paral_size = input_paral_size
+        self.input_quant_gran = input_quant_gran
+        self.weight_sliced = SlicedData(self.weight_slice_method, device=device,
+                                        bw_e=bw_e, is_weight=True, paral_size=weight_paral_size, quant_gran=weight_quant_gran)
         self.engine = engine
         # the sliced weight shape is (C_in*kh*kw, C_out)
         self.weight_sliced.slice_data_imp(engine, self.weight.reshape(self.weight.shape[0], -1).detach().t())
@@ -96,7 +97,8 @@ class Conv2dMem(nn.Module):
         # input_unfold size: (N, C*kh*kw, L), N is the batch size, C is the channel, kh and kw is the kernel size
         # L is the length of the unfolded vector, L = H_out * W_out
         # transpose the input_unfold to (N, L, C*kh*kw)
-        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,slice_data_flag=True)
+        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,
+        is_weight=False, paral_size=self.input_paral_size, quant_gran=self.input_quant_gran)
         input_unfold = F.unfold(input, kernel_size=self.weight.shape[2:], stride=self.stride, padding=self.padding,
                                 dilation=self.dilation).transpose(1, 2)
         input_sliced.slice_data_imp(self.engine, input_unfold.detach())
@@ -121,23 +123,26 @@ def _test():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     X = torch.randn(5, 3, 96, 96, requires_grad=True, dtype=torch.float).to(device)
     engine = DPETensor(
-        var=0.02,
-        rdac=2**2,
-        g_level=2**2,
-        radc=2**12,
-        weight_quant_gran=(128, 128),
-        input_quant_gran=(1, 128),
-        weight_paral_size=(64, 64),
-        input_paral_size=(1, 64)
-    )
-    xblk = [1, 1, 2, 4]
-    mblk = [1, 1, 2, 4]
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
+        write_variation=0.0,          # Write variation
+        rate_stuck_HGS=0.001,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.000,          # Rate of stuck at LGS
+        read_variation={0:0.05, 1:0.05, 2:0.05, 3:0.05},           # Read variation
+        vnoise=0.0,                   # Random Gaussian noise of voltage
+        rdac=2**2,                      # Number of DAC resolution 
+        g_level=2**2,                   # Number of conductance levels
+        radc=2**12
+        )
+    xblk = [1, 1, 2, 2]
+    mblk = [1, 1, 2, 2]
 
     layer = Conv2dMem(engine, 3, 6, 3, xblk, mblk, padding=1, stride=1, bias=False,
-                      device=device)
+                      device=device, bw_e=None, input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                      input_quant_gran=(1, 64), weight_quant_gran=(64, 64))
     output = layer(X)
     output.backward(torch.ones_like(output))
-
+    
     weight = layer.weight.data
     weight.requires_grad = True
     out = F.conv2d(X, weight, padding=1, stride=1)

@@ -249,7 +249,7 @@ class DPETensor(object):
         """
         Vin = _num2V_func(x)
         G = _num2R_func(mat)
-
+        
         if max(mat.sliced_max_weights) > self.g_level - 1:
             raise ValueError('The weight data is out of the range!')
 

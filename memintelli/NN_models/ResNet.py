@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 from typing import Union, List, Dict, Any, cast, Optional, Type
-from memintelli.NN_layers import Conv2dMem, LinearMem, SliceMethod
+from memintelli.NN_layers import Conv2dMem, LinearMem
 
 # Pretrained model URLs
 model_urls = {
@@ -264,7 +264,11 @@ def ResNet_zoo(
     input_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
     weight_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
     device: Optional[Any] = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    bw_e: Optional[Any] = None
+    bw_e: Optional[Any] = None,
+    input_paral_size: Optional[Union[torch.Tensor, list]] = (1, 32),
+    weight_paral_size: Optional[Union[torch.Tensor, list]] = (32, 32),
+    input_quant_gran: Optional[Union[torch.Tensor, list]] = (1, 64),
+    weight_quant_gran: Optional[Union[torch.Tensor, list]] = (64, 64)
 ) -> ResNet:
     """
     ResNet model factory
@@ -286,8 +290,12 @@ def ResNet_zoo(
         "input_slice": input_slice,
         "weight_slice": weight_slice,
         "device": device,
-        "bw_e": bw_e
-    }
+        "bw_e": bw_e,
+        "input_paral_size": input_paral_size,
+        "weight_paral_size": weight_paral_size,
+        "input_quant_gran": input_quant_gran,
+        "weight_quant_gran": weight_quant_gran
+    } if mem_enabled else {}
     # Architecture configuration
     model_params: Dict[str, Any] = {
         'resnet18': (BasicBlock, [2, 2, 2, 2]),

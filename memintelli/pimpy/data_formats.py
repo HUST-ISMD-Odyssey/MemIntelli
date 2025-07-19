@@ -151,6 +151,7 @@ class SlicedData(object):
 
         quant_gran = list(quant_gran)
         # extend quant_gran to an integer multiple of paral_size
+
         quant_gran[0] = math.ceil(quant_gran[0] / paral_size[0]) * paral_size[0]
         quant_gran[1] = math.ceil(quant_gran[1] / paral_size[1]) * paral_size[1]
 
@@ -189,7 +190,7 @@ class SlicedData(object):
                                                                                                   self.slice_method,
                                                                                                   max_abs_temp_mat)
 
-        self.mat_data = self.quantized_data.transpose(2, 3).reshape(mat.shape[0], num_gran_row * num_divide_row * paral_size[0],
+        self.quantized_data = self.quantized_data.transpose(2, 3).reshape(mat.shape[0], num_gran_row * num_divide_row * paral_size[0],
                                     num_gran_col * num_divide_col * paral_size[1])[:, :mat.shape[1], :mat.shape[2]]
         # remove the unsqueezed dimension and assign the values to the class attributes
         if unsqueezed:

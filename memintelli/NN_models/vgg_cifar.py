@@ -118,7 +118,11 @@ def vgg_cifar_zoo(
     input_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
     weight_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
     device: Optional[Any] = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    bw_e: Optional[Any] = None
+    bw_e: Optional[Any] = None,
+    input_paral_size: Optional[Union[torch.Tensor, list]] = (1, 32),
+    weight_paral_size: Optional[Union[torch.Tensor, list]] = (32, 32),
+    input_quant_gran: Optional[Union[torch.Tensor, list]] = (1, 64),
+    weight_quant_gran: Optional[Union[torch.Tensor, list]] = (64, 64)
 ) -> VGG_CIFAR:
     """
     VGG model factory for CIFAR datasets.
@@ -142,7 +146,11 @@ def vgg_cifar_zoo(
         "input_slice": input_slice,
         "weight_slice": weight_slice,
         "device": device,
-        "bw_e": bw_e
+        "bw_e": bw_e,
+        "input_paral_size": input_paral_size,
+        "weight_paral_size": weight_paral_size,
+        "input_quant_gran": input_quant_gran,
+        "weight_quant_gran": weight_quant_gran
     } if mem_enabled else {}
     
     model = VGG_CIFAR(

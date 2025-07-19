@@ -10,14 +10,15 @@ import torch.nn.functional as F
 import torch
 import math
 from memintelli.pimpy.data_formats import SlicedData
-from memintelli.pimpy.utils import ABSE
 from memintelli.NN_layers.functions import linear_mem_func
 from matplotlib import pyplot as plt
 from memintelli.pimpy import DPETensor
+from memintelli.pimpy.utils import SNR
 
 class LinearMem(nn.Module):
     def __init__(self, engine, in_features: int, out_features: int, input_slice:[list, tuple], weight_slice:[list, tuple],
-                 bias: bool = True, device=None, dtype=torch.float32, bw_e=None):
+                 bias: bool = True, device=None, dtype=torch.float32, bw_e=None, input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                 input_quant_gran=(1, 32), weight_quant_gran=(32, 32)):
         '''
         :param in_features: the input neuron number
         :param out_features: the output neuron number
@@ -41,9 +42,11 @@ class LinearMem(nn.Module):
         self.weight_slice_method = torch.tensor(weight_slice).to(device)
         self.input_slice_method = torch.tensor(input_slice).to(device)
 
-        self.weight_sliced = SlicedData(self.weight_slice_method, device=device, bw_e=bw_e, slice_data_flag=False)
+        self.weight_sliced = SlicedData(self.weight_slice_method, device=device, bw_e=bw_e, is_weight=True, paral_size=weight_paral_size, quant_gran=weight_quant_gran)
         self.engine = engine
-        self.weight_sliced.slice_data_imp(engine, self.weight.detach().t())        
+        self.weight_sliced.slice_data_imp(engine, self.weight.detach().t()) 
+        self.input_paral_size = input_paral_size
+        self.input_quant_gran = input_quant_gran
 
     def reset_parameters(self) -> None:
         # Setting x=sqrt(5) in kaiming_uniform is the same as initializing with
@@ -56,38 +59,35 @@ class LinearMem(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,slice_data_flag=True)
+        input_sliced = SlicedData(self.input_slice_method, device=input.device, bw_e=self.weight_sliced.bw_e,is_weight=False, paral_size=self.input_paral_size, quant_gran=self.input_quant_gran)
         input_sliced.slice_data_imp(self.engine, input.detach())
         return linear_mem_func(self.engine, input, self.weight, input_sliced, self.weight_sliced, self.bias)
 
     def update_weight(self):
         self.weight_sliced.slice_data_imp(self.engine, self.weight.detach().t().to(self.engine.device))
 
-def _test(mode=1):
+def _test(mode=0):
     if mode == 0:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        input = torch.randn(100, 80, requires_grad=True).to(device)
-        engine = DPETensor(var=0.0, quant_array_gran=(128, 128), quant_input_gran=(1, 128), paral_array_size=(64, 64), paral_input_size=(1, 64))
-        xblk = [1, 1, 2, 4]
-        mblk = [1, 1, 2, 4]
-        layer = LinearMem(engine,80, 90, bias=False,input_slice=xblk, weight_slice=mblk, device=device, bw_e=None)
-        output = layer(input)
-        output.backward(torch.ones_like(output, dtype=torch.float))
-        weight = layer.weight.data
-        weight.requires_grad = True
-        output_ideal = F.linear(input, weight)
-        output_ideal.backward(torch.ones_like(output_ideal, dtype=torch.float))
-        print(ABSE(output_ideal.cpu().detach().numpy(), output.cpu().detach().numpy()))
-        print(ABSE(weight.grad.cpu().detach().numpy(), layer.weight.grad.cpu().detach().numpy()))
-    elif mode == 1:
         print("-----------------cuda-----------------")
-        engine = DPETensor(var=0.0, quant_array_gran=(128, 128), quant_input_gran=(1, 128), paral_array_size=(64, 64), paral_input_size=(1, 64))
-        xblk = [1, 1, 2, 4]
-        mblk = [1, 1, 2, 4]
+        engine = DPETensor(
+        HGS=1e-5,                       # High conductance state
+        LGS=1e-8,                       # Low conductance state
+        write_variation=0.0,          # Write variation
+        rate_stuck_HGS=0.001,          # Rate of stuck at HGS
+        rate_stuck_LGS=0.000,          # Rate of stuck at LGS
+        read_variation={0:0.05, 1:0.05, 2:0.05, 3:0.05},           # Read variation
+        vnoise=0.05,                   # Random Gaussian noise of voltage
+        rdac=2**2,                      # Number of DAC resolution 
+        g_level=2**2,                   # Number of conductance levels
+        radc=2**12
+        )
+        xblk = [1, 1, 2, 2]
+        mblk = [1, 1, 2, 2]
 
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         input = torch.randn(500, 100, requires_grad=True).to(device)
-        layer = LinearMem(engine, 100, 300, bias=False, input_slice=xblk, weight_slice=mblk, device=device, bw_e=None)
+        layer = LinearMem(engine, 100, 300, bias=False, input_slice=xblk, weight_slice=mblk, device=device, bw_e=None, input_paral_size=(1, 32), weight_paral_size=(32, 32), 
+                 input_quant_gran=(1, 32), weight_quant_gran=(32, 32))
         output = layer(input)
         #output.backward(torch.ones_like(output, dtype=torch.float))
         weight = layer.weight.data
@@ -97,8 +97,8 @@ def _test(mode=1):
 
         output = output.cpu().detach().numpy()
         output_ideal = output_ideal.cpu().detach().numpy()
-        print(ABSE(output_ideal, output))
+        print(SNR(output_ideal, output))
 
 
 if __name__ == '__main__':
-    _test(1)
+    _test(0)
