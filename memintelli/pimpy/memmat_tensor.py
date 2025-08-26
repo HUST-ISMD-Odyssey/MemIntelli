@@ -81,6 +81,7 @@ class DPETensor(object):
         self.rdac = rdac
         if isinstance(radc, (list, tuple)):
             self.radc = torch.tensor(radc, device=device)
+            self.radc = self.radc.flip(0)
             self.radc_is_list = True
         else:
             self.radc = radc
