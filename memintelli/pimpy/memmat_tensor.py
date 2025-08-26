@@ -44,7 +44,9 @@ class DPETensor(object):
             vnoise (float): Random Gaussian noise of voltage
             wire_resistance (float): Wire resistance
             rdac (int): Number of DAC resolution
-            radc (int): Number of ADC resolution
+            radc (int or list): Number of ADC resolution. Can be:
+                - Single integer: Same resolution for all weight slices
+                - List/tuple: Different resolution for each weight slice (length must match number of weight slices)
             vread (float): Read voltage
             rate_stuck_HGS (float): Ratio of stuck faults to HGS state, i.e., the probability of stuck on, range: [0, 1]
             rate_stuck_LGS (float): Ratio of stuck faults to LGS state, i.e., the probability of stuck off, range: [0, 1]
@@ -77,7 +79,12 @@ class DPETensor(object):
 
         self.vnoise = vnoise
         self.rdac = rdac
-        self.radc = radc
+        if isinstance(radc, (list, tuple)):
+            self.radc = torch.tensor(radc, device=device)
+            self.radc_is_list = True
+        else:
+            self.radc = radc
+            self.radc_is_list = False
         self.vread = vread
 
         # these parameters are optional
@@ -87,8 +94,12 @@ class DPETensor(object):
 
         self.device = device
 
-        if self.radc < 2:
-            raise ValueError('The resolution of the ADC should be larger than 1!')
+        if self.radc_is_list:
+            if torch.any(self.radc < 2):
+                raise ValueError('All ADC resolution values should be larger than 1!')
+        else:
+            if self.radc < 2:
+                raise ValueError('The resolution of the ADC should be larger than 1!')
         if self.rdac < 2:
             raise ValueError('The resolution of the DAC should be larger than 1!')
         if self.g_level < 2:
@@ -101,6 +112,18 @@ class DPETensor(object):
         # Pre-compute conductance levels for efficiency
         self.Q_G = (self.HGS - self.LGS) / (self.g_level - 1)
         self.conductance_levels = torch.tensor([self.LGS + i * self.Q_G for i in range(self.g_level)], device=self.device)
+
+    def _validate_radc_with_slices(self, mat: SlicedData):
+        """
+        Validate that radc array length matches the number of weight slices.
+        
+        Parameters:
+            mat (SlicedData): Weight tensor data.
+        """
+        if self.radc_is_list:
+            num_weight_slices = len(mat)
+            if len(self.radc) != num_weight_slices:
+                raise ValueError(f'Length of radc array ({len(self.radc)}) must match number of weight slices ({num_weight_slices})')
 
     def __call__(self, x: SlicedData, mat: SlicedData):
         return self.MapReduceDot(x, mat)
@@ -122,6 +145,7 @@ class DPETensor(object):
         # check the quantization shape of the input data and weight data
         if x.shape[-1] != mat.shape[-2]:
             raise ValueError('The input data mismatches the shape of weight data!')
+        self._validate_radc_with_slices(mat)
         if self.wire_resistance > 0:
             raise NotImplementedError('The wire_factor is not supported in the training version!')
         else:
@@ -257,7 +281,12 @@ class DPETensor(object):
             adcRef = (self.HGS - self.LGS) * self.vread * Vin.shape[-1]
             QG = (self.HGS - self.LGS) / (self.g_level - 1)
             out = dot_high_dim(Vin, G - self.LGS)
-            out = torch.round(out / adcRef * (self.radc - 1)) / (self.radc - 1)
+            if self.radc_is_list:
+                radc_expanded = self.radc.view(1, 1, 1, 1, -1, 1, 1)  # reshape to broadcast correctly
+                out = torch.round(out / adcRef * (radc_expanded - 1)) / (radc_expanded - 1)
+            else:
+                out = torch.round(out / adcRef * (self.radc - 1)) / (self.radc - 1)
+
             out = torch.mul(out, x.sliced_max_weights.reshape(1, 1, 1, -1, 1, 1, 1))
             out = (torch.mul(out, mat.sliced_max_weights.reshape(1, 1, 1, 1, -1, 1, 1)) / QG / self.vread / (
                         self.g_level - 1) * adcRef)
@@ -283,7 +312,12 @@ class DPETensor(object):
             adcRef = (self.HGS - self.LGS) * self.vread * Vin.shape[-1]
             QG = (self.HGS - self.LGS) / (self.g_level - 1)
             out = dot_high_dim(Vin, G - self.LGS)
-            out = torch.round(out / adcRef * (self.radc - 1)) / (self.radc - 1)
+
+            if self.radc_is_list:
+                radc_expanded = self.radc.view(1, 1, 1, 1, 1, -1, 1, 1)  # reshape to broadcast correctly
+                out = torch.round(out / adcRef * (radc_expanded - 1)) / (radc_expanded - 1)
+            else:
+                out = torch.round(out / adcRef * (self.radc - 1)) / (self.radc - 1)
             out = torch.mul(out, x.sliced_max_weights.reshape(1, 1, 1, 1, -1, 1, 1, 1))
             out = (torch.mul(out, mat.sliced_max_weights.reshape(1, 1, 1, 1, 1, -1, 1, 1)) / QG / self.vread / (
                         self.g_level - 1) * adcRef)
@@ -344,8 +378,9 @@ if __name__ == '__main__':
             mat = SlicedData(mblk, device=device, bw_e=None, is_weight=True, quant_gran=(64, 64), paral_size=(64, 64))
             x = SlicedData(xblk, device=device, bw_e=None, quant_gran=(64, 64), paral_size=(64, 64))
             read_variation = {0: 0.05, 1: 0.05, 2: 0.05, 3: 0.1}
-            engine = DPETensor(write_variation=0.0, read_variation=0, rate_stuck_HGS=0.0, rate_stuck_LGS=0.0, vnoise=0.0,  
-            g_level=4, rdac=4, radc=2 ** 12)
+            radc_per_slice = [2**12, 2**11, 2**10, 2**9]  # Different radc for each slice
+            engine = DPETensor(write_variation=0.0, read_variation=read_variation, rate_stuck_HGS=0.0, rate_stuck_LGS=0.0, vnoise=0.0,  
+            g_level=4, rdac=4, radc=radc_per_slice)
             mat.slice_data_imp(engine, mat_data)
             x.slice_data_imp(engine, x_data)
             start = time.time()
