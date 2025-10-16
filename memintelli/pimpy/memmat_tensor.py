@@ -279,7 +279,7 @@ class DPETensor(object):
             raise ValueError('The weight data is out of the range!')
 
         if len(x.shape) == 2:
-            adcRef = (self.HGS - self.LGS) * self.vread * Vin.shape[-1]
+            adcRef = (self.HGS - self.LGS) * self.vread * (Vin.shape[-1])
             QG = (self.HGS - self.LGS) / (self.g_level - 1)
             out = dot_high_dim(Vin, G - self.LGS)
             if self.radc_is_list:

@@ -22,7 +22,7 @@ def load_dataset(data_root, batch_size=256, num_classes=10):
     if num_classes == 10:
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.201])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
         ])
         train_set = datasets.CIFAR10(data_root, train=True, download=True, transform=transform)
         test_set = datasets.CIFAR10(data_root, train=False, download=True, transform=transform)
@@ -117,7 +117,7 @@ def main():
     bw_e = None
 
     mem_enabled = True       # Select the memrsitive mode or software mode
-    model_name = "vgg13_bn"   # Select the model name
+    model_name = "resnet18"   # Select the model name
     num_classes = 10          # if 10, it is cifar10, if 100, it is cifar100
 
     # Initialize components
@@ -137,7 +137,7 @@ def main():
         radc=2**6
         )
     
-    model = vgg_cifar_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
+    model = resnet_cifar_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
     engine=mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e,
     input_paral_size=(1, 64), weight_paral_size=(64, 1), input_quant_gran=(1, 256), weight_quant_gran=(256, 1)).to(device)
     model.update_weight()

@@ -7,5 +7,6 @@ from .lenet5 import *
 from .vgg_cifar import *
 from .ResNet import *
 from .DeiT import *
+from .resnet_cifar import *
 #from .Bert import *
 
