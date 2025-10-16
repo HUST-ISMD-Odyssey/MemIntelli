@@ -48,42 +48,34 @@ class InvertedResidual(nn.Module):
         self.mem_args = mem_args if self.mem_enabled else {}
 
         layers = []
+        conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
+        
         if expand_ratio != 1:
             # Pointwise expansion
-            conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-            layers.extend([
-                conv_layer(
+            if mem_enabled:
+                layers.append(conv_layer(
                     in_channels=inp, out_channels=hidden_dim, kernel_size=1,
                     stride=1, padding=0, bias=False, **self.mem_args
-                ) if mem_enabled else nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-            ])
+                ))
+            else:
+                layers.append(nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False))
+            layers.append(nn.BatchNorm2d(hidden_dim))
+            layers.append(nn.ReLU6(inplace=True))
         
-        # Depthwise convolution - Note: memristive implementation uses standard conv with groups
-        if mem_enabled:
-            # For depthwise, we use standard nn.Conv2d with groups since Conv2dMem doesn't support groups efficiently
-            layers.extend([
-                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-            ])
-        else:
-            layers.extend([
-                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-            ])
+        # Depthwise convolution - always use standard conv with groups
+        layers.append(nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False))
+        layers.append(nn.BatchNorm2d(hidden_dim))
+        layers.append(nn.ReLU6(inplace=True))
         
         # Pointwise linear projection
-        conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-        layers.extend([
-            conv_layer(
+        if mem_enabled:
+            layers.append(conv_layer(
                 in_channels=hidden_dim, out_channels=oup, kernel_size=1,
                 stride=1, padding=0, bias=False, **self.mem_args
-            ) if mem_enabled else nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(oup),
-        ])
+            ))
+        else:
+            layers.append(nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False))
+        layers.append(nn.BatchNorm2d(oup))
         
         self.conv = nn.Sequential(*layers)
 
@@ -146,15 +138,22 @@ class MobileNetV2(nn.Module):
         input_channel = self._make_divisible(input_channel * width_mult, round_nearest)
         self.last_channel = self._make_divisible(last_channel * max(1.0, width_mult), round_nearest)
         
+        # First conv layer - wrap in Sequential to match pretrained model structure
         conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-        features = [
-            conv_layer(
+        features = []
+        
+        # Add first conv layer wrapped in Sequential (features.0)
+        first_conv_layers = []
+        if mem_enabled:
+            first_conv_layers.append(conv_layer(
                 in_channels=3, out_channels=input_channel, kernel_size=3,
                 stride=2, padding=1, bias=False, **self.mem_args
-            ) if mem_enabled else nn.Conv2d(3, input_channel, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(input_channel),
-            nn.ReLU6(inplace=True),
-        ]
+            ))
+        else:
+            first_conv_layers.append(nn.Conv2d(3, input_channel, 3, 2, 1, bias=False))
+        first_conv_layers.append(nn.BatchNorm2d(input_channel))
+        first_conv_layers.append(nn.ReLU6(inplace=True))
+        features.append(nn.Sequential(*first_conv_layers))
 
         # Building inverted residual blocks
         for t, c, n, s in inverted_residual_setting:
@@ -167,28 +166,33 @@ class MobileNetV2(nn.Module):
                 ))
                 input_channel = output_channel
 
-        # Building last several layers
-        features.extend([
-            conv_layer(
+        # Make it nn.Sequential (without last conv layer)
+        self.features = nn.Sequential(*features)
+        
+        # Building last conv layer as a separate Sequential to match pretrained model structure
+        last_conv_layers = []
+        if mem_enabled:
+            last_conv_layers.append(conv_layer(
                 in_channels=input_channel, out_channels=self.last_channel, kernel_size=1,
                 stride=1, padding=0, bias=False, **self.mem_args
-            ) if mem_enabled else nn.Conv2d(input_channel, self.last_channel, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(self.last_channel),
-            nn.ReLU6(inplace=True),
-        ])
+            ))
+        else:
+            last_conv_layers.append(nn.Conv2d(input_channel, self.last_channel, 1, 1, 0, bias=False))
+        last_conv_layers.append(nn.BatchNorm2d(self.last_channel))
+        last_conv_layers.append(nn.ReLU6(inplace=True))
+        self.conv = nn.Sequential(*last_conv_layers)
 
-        # Make it nn.Sequential
-        self.features = nn.Sequential(*features)
-
-        # Building classifier
+        # Building classifier - match pretrained model structure (no Sequential wrapper for compatibility)
+        # For standard mode without Sequential, dropout is handled separately
+        self.dropout = nn.Dropout(0.2)
         linear_layer = LinearMem if mem_enabled else nn.Linear
-        self.classifier = nn.Sequential(
-            nn.Dropout(0.2),
-            linear_layer(
+        if mem_enabled:
+            self.classifier = linear_layer(
                 in_features=self.last_channel, out_features=num_classes,
                 **self.mem_args
-            ) if mem_enabled else nn.Linear(self.last_channel, num_classes),
-        )
+            )
+        else:
+            self.classifier = nn.Linear(self.last_channel, num_classes)
 
         # Weight initialization
         for m in self.modules():
@@ -219,9 +223,11 @@ class MobileNetV2(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
+        x = self.conv(x)
         # Cannot use "squeeze" as batch-size can be 1
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
+        x = self.dropout(x)
         x = self.classifier(x)
         return x
 
@@ -233,6 +239,8 @@ class MobileNetV2(nn.Module):
         for module in self.modules():
             if isinstance(module, (Conv2dMem, LinearMem)):
                 module.update_weight()
+    
+    
 
 
 def MobileNetV2_zoo(
