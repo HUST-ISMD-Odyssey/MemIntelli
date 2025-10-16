@@ -8,5 +8,6 @@ from .vgg_cifar import *
 from .ResNet import *
 from .DeiT import *
 from .resnet_cifar import *
+from .Mobilnetv2 import *
 #from .Bert import *
 
