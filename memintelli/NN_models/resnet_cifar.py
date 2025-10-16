@@ -40,12 +40,12 @@ class BasicBlock(nn.Module):
 
         self.conv1 = conv_layer(
             in_channels=in_channels, out_channels=out_channels, kernel_size=3,
-            stride=stride, padding=1, bias=False
+            stride=stride, padding=1, bias=False, **self.mem_args
         )
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = conv_layer(
             in_channels=out_channels, out_channels=out_channels, kernel_size=3,
-            stride=1, padding=1, bias=False
+            stride=1, padding=1, bias=False, **self.mem_args
         )
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU()
@@ -90,17 +90,17 @@ class Bottleneck(nn.Module):
 
         self.conv1 = conv_layer(
             in_channels=in_channels, out_channels=out_channels, kernel_size=1,
-            stride=1, bias=False
+            stride=1, bias=False, **self.mem_args
         )
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = conv_layer(
             in_channels=out_channels, out_channels=out_channels, kernel_size=3,
-            stride=stride, padding=1, bias=False
+            stride=stride, padding=1, bias=False, **self.mem_args
         )
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.conv3 = conv_layer(
             in_channels=out_channels, out_channels=out_channels*self.expansion, kernel_size=1,
-            stride=1, bias=False
+            stride=1, bias=False, **self.mem_args
         )
         self.bn3 = nn.BatchNorm2d(out_channels * self.expansion)
         self.relu = nn.ReLU()
@@ -193,12 +193,16 @@ class ResNet_CIFAR(nn.Module):
         layers.append(block(
             self.in_channels, channels,
             stride=stride,
-            downsample=downsample
+            downsample=downsample,
+            mem_enabled=self.mem_enabled,
+            mem_args=self.mem_args
         ))
         self.in_channels = channels * block.expansion
         for _ in range(1, blocks):
             layers.append(block(
-                self.in_channels, channels
+                self.in_channels, channels,
+                mem_enabled=self.mem_enabled,
+                mem_args=self.mem_args
             ))
 
         return nn.Sequential(*layers)
