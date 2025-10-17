@@ -12,7 +12,7 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 from torch.nn import functional as F
 
-from memintelli.NN_models import resnet_cifar_zoo
+from memintelli.NN_models import ResNet_CIFAR_zoo
 from memintelli.pimpy.memmat_tensor import DPETensor
 
 def load_dataset(data_root, batch_size=256, num_classes=10):
@@ -137,7 +137,7 @@ def main():
         radc=2**6
         )
     
-    model = resnet_cifar_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
+    model = ResNet_CIFAR_zoo(model_name=model_name, num_classes=num_classes, pretrained=True, mem_enabled=mem_enabled, 
     engine=mem_engine, input_slice=input_slice, weight_slice=weight_slice, device=device, bw_e=bw_e,
     input_paral_size=(1, 64), weight_paral_size=(64, 1), input_quant_gran=(1, 256), weight_quant_gran=(256, 1)).to(device)
     model.update_weight()
