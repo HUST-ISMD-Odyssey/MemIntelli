@@ -12,7 +12,7 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 from torch.nn import functional as F
 
-from memintelli.NN_models import resnet_cifar_zoo
+from memintelli.NN_models import vgg_cifar_zoo
 from memintelli.pimpy.memmat_tensor import DPETensor
 
 def load_dataset(data_root, batch_size=256, num_classes=10):
