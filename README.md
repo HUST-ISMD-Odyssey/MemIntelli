@@ -145,5 +145,5 @@ Any advice and criticism are highly appreciated on this package. Naturally, you 
 
 ## References related to this tool
 1. Zhiwei Zhou, Jiancong Li, Han Jia, Ling Yang, Houji Zhou, Han Bao, Yuyang Fu, Yi Li*, Xiangshui Miao, ArPCIM: An Arbitrary-Precision Analog Computing-in-Memory Accelerator with unified INT/FP Arithmetic,  IEEE Transactions on Circuits and Systems I: Regular Papers , 2024.  DOI: 10.1109/TCSI.2024.3491825.
-2. Yangyu Fu, Jiancong Li, et al. , ReSMiPS: A ReRAM-based Sparse Mixed-precision Solver with Fast Matrix Reordering Algorithm, DAC 2025.
+2. Yangyu Fu, Jiancong Li, et al. , ReSMiPS: A ReRAM-based Sparse Mixed-precision Solver with Fast Matrix Reordering Algorithm, DAC 2025. DOI: 10.1109/DAC63849.2025.11133301
 
