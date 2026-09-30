@@ -32,11 +32,12 @@ class SlicedData(object):
         """
         self.bw_e = bw_e
         self.is_weight = is_weight
-        self.device = torch.device('cpu') if device is None else device
+        self.device = torch.device('cpu') if device is None else torch.device(device)
         self.shape = None
         self.inference = inference
         # if inference is True, the sliced data of weight keeps the conductance of G
         self.G = None
+        self.G_indices = None  # compressed uint8 level indices (4x smaller than float32 G)
         self.paral_size = paral_size
         if quant_gran is None:
             self.quant_gran = paral_size
@@ -45,7 +46,7 @@ class SlicedData(object):
         if slice_method[0] != 1:
             raise ValueError('The first bit of the slice method should be 1')
         self.slice_method = slice_method
-        self.device = torch.device('cpu') if device is None else device
+        self.device = torch.device('cpu') if device is None else torch.device(device)
         self.shape = None
 
         self.sliced_data = None
@@ -53,9 +54,9 @@ class SlicedData(object):
         self.max_data = None
         self.e_bias = None
 
-        self.sliced_max_weights = torch.empty(len(slice_method), device=device)
-        self.sliced_weights = torch.empty(len(slice_method), device=device)
-        self._init_data(slice_method, device)
+        self.sliced_max_weights = torch.empty(len(slice_method), device=self.device)
+        self.sliced_weights = torch.empty(len(slice_method), device=self.device)
+        self._init_data(slice_method, self.device)
 
     def _init_data(self, slice_method: torch.Tensor, device):
         assert slice_method[0] == 1, 'the first slice should be 1'
@@ -80,7 +81,10 @@ class SlicedData(object):
         copy_ = copy.deepcopy(self)
         copy_.max_data = self.max_data.transpose(0,1)
         if self.is_weight:
-            copy_.G = self.G.transpose(-4, -5)
+            if self.G is not None:
+                copy_.G = self.G.transpose(-4, -5)
+            if self.G_indices is not None:
+                copy_.G_indices = self.G_indices.transpose(-4, -5)
         if self.inference:
             copy_.sliced_data = None
             copy_.quantized_data = None
@@ -92,6 +96,33 @@ class SlicedData(object):
     def size(self):
         return self.quantized_data.size()
 
+    def compress_G(self, engine):
+        """Compress float32 G to uint8 level indices for memory-efficient inference.
+
+        ~4x memory savings (float32 → uint8). Only valid when engine.write_variation == 0,
+        because write variation adds continuous noise that cannot be losslessly compressed.
+        Stuck faults are handled correctly (they map to level 0 or g_level-1).
+
+        Uses in-place operations to minimize peak memory during compression.
+        Peak = G (float32) + G_indices (uint8) ≈ 1.25x of G.
+
+        Args:
+            engine: DPETensor engine with conductance parameters.
+        """
+        if self.G is None:
+            return
+        # In-place conversion: G → level indices (reuses G's memory)
+        self.G.sub_(engine.LGS)            # G = G - LGS
+        self.G.div_(engine.Q_G)            # G = (G - LGS) / Q_G → level index (float)
+        self.G.round_()                     # round to nearest integer level
+        self.G.clamp_(0, engine.g_level - 1)  # clamp to valid range
+        # Convert to compact integer type (new allocation, but much smaller)
+        if engine.g_level <= 256:
+            self.G_indices = self.G.to(torch.uint8)
+        else:
+            self.G_indices = self.G.to(torch.int16)
+        self.G = None  # free float32 tensor
+
     def slice_data_imp(self, engine, data):
         """
         implement the localized slicing of the data, and apply mapping
@@ -100,16 +131,27 @@ class SlicedData(object):
         :return:
         """
         data = data.to(engine.device)
+        # Synchronize all internal tensors to the computation device.
+        # This handles the case where the model is on a different device than the engine
+        # (e.g., model on cuda:1 but engine on cuda:0).
+        compute_device = data.device
+        if self.slice_method.device != compute_device:
+            self.slice_method = self.slice_method.to(compute_device)
+            self.sliced_max_weights = self.sliced_max_weights.to(compute_device)
+            self.sliced_weights = self.sliced_weights.to(compute_device)
+            self.device = compute_device
         self._slice_data(data)
         self.shape = data.shape
         if self.is_weight:
             max_weights = self.sliced_max_weights.reshape(1, 1, -1, 1, 1)
             self.G = engine._num2G(self.sliced_data, max_weights)
         if self.inference:
-            # in the inference mode, the quantized data is not used in the backward process,
-            # so the quantized data is set to None, sliced data is used to calculate the conductance
+            # In inference mode, quantized_data is not needed (only used for backward).
+            # For weights: sliced_data was only needed to compute G, so free it.
+            # For inputs: sliced_data is still needed for the forward dot product.
             self.quantized_data = None
-            self.sliced_data = None
+            if self.is_weight:
+                self.sliced_data = None
 
     def _slice_data(self, mat: torch.Tensor):
         """
@@ -150,6 +192,10 @@ class SlicedData(object):
             quant_gran = quant_gran
 
         quant_gran = list(quant_gran)
+        if not isinstance(self.quant_gran, str) and any(g % p for g, p in zip(quant_gran, paral_size)):
+            raise ValueError("Legacy quant_gran cannot be rounded up silently; use SimulationEngine for column scales")
+        if self.quant_gran in ("per-row", "per-col") and any(g < p for g, p in zip(quant_gran, paral_size)):
+            raise ValueError("Legacy per-row/per-col scales cannot be enlarged silently; use SimulationEngine")
         # extend quant_gran to an integer multiple of paral_size
 
         quant_gran[0] = math.ceil(quant_gran[0] / paral_size[0]) * paral_size[0]
@@ -184,18 +230,35 @@ class SlicedData(object):
         if self.bw_e:  # define the bfp_map_tensor function
             self.sliced_data, self.quantized_data, self.max_data, self.e_bias = bfp_map_tensor(temp_mat,
                                                                                                self.slice_method,
-                                                                                               max_abs_temp_mat)
+                                                                                               max_abs_temp_mat,
+                                                                                               skip_quantized=self.inference)
         else:
             self.sliced_data, self.quantized_data, self.max_data, self.e_bias  = quant_map_tensor(temp_mat,
                                                                                                   self.slice_method,
-                                                                                                  max_abs_temp_mat)
+                                                                                                  max_abs_temp_mat,
+                                                                                                  skip_quantized=self.inference)
 
-        self.quantized_data = self.quantized_data.transpose(2, 3).reshape(mat.shape[0], num_gran_row * num_divide_row * paral_size[0],
-                                    num_gran_col * num_divide_col * paral_size[1])[:, :mat.shape[1], :mat.shape[2]]
+        if self.quantized_data is not None:
+            self.quantized_data = self.quantized_data.transpose(2, 3).reshape(mat.shape[0], num_gran_row * num_divide_row * paral_size[0],
+                                        num_gran_col * num_divide_col * paral_size[1])[:, :mat.shape[1], :mat.shape[2]]
         # remove the unsqueezed dimension and assign the values to the class attributes
         if unsqueezed:
             self.sliced_data = self.sliced_data.squeeze(0)
-            self.quantized_data = self.quantized_data.squeeze(0)
+            if self.quantized_data is not None:
+                self.quantized_data = self.quantized_data.squeeze(0)
             self.max_data = self.max_data.squeeze(0)
             if self.e_bias is not None:
                 self.e_bias = self.e_bias.squeeze(0)
+
+
+# v3 keeps the public SlicedData name for source compatibility, but routes it
+# through the multimode backend. Mode 0 is the original two's-complement bit
+# slicing path, so existing code keeps its behavior while future optimization
+# work targets one backend.
+from memintelli.pimpy.data_formats_multimode import SlicedDataMultiMode as _SlicedDataMultiMode
+
+
+class SlicedData(_SlicedDataMultiMode):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("mode", 0)
+        super().__init__(*args, **kwargs)

@@ -4,27 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memintelli"
-version = "0.0.1.3"
+version = "2.0.0"
 authors = [
     {name = "Odysseia", email = "1548384176@qq.com"},
 ]
-description = "Memristive Intelligient Computing Simulator"
+description = "Bit-sliced memristor neural network simulation with Triton and PyTorch backends"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 dependencies = [
-    "numpy>=1.22,<2",
-    "matplotlib",
-    "tqdm",
+    "torch>=2.9,<2.12",
+    "numpy>=1.26,<3",
+    "matplotlib>=3.8,<4",
+    "tqdm>=4.66,<5",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -32,18 +30,18 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zzzzzzzzzzw/Memintelli"
-Repository = "https://github.com/zzzzzzzzzzw/Memintelli"
+Homepage = "https://github.com/HUST-ISMD-Odyssey/MemIntelli"
+Repository = "https://github.com/HUST-ISMD-Odyssey/MemIntelli"
 
 [project.optional-dependencies]
-cuda = [
-    "torch==2.1.1+cu118",
-    "torchvision==0.16.1+cu118", 
-    "torchaudio==2.1.1+cu118",
-]
+triton = ["triton>=3.5,<3.7; sys_platform == 'linux'"]
+vision = ["torchvision>=0.24,<0.27", "Pillow>=10"]
+speech = ["torchaudio>=2.9,<2.12", "soundfile>=0.13,<0.14"]
+llm = ["transformers>=4.51,<6", "safetensors>=0.5"]
+yolo = ["torchvision>=0.24,<0.27", "opencv-python-headless>=4.10", "PyYAML>=6", "scipy>=1.12", "pandas>=2", "requests>=2.31", "psutil>=6", "seaborn>=0.13", "thop>=0.1.1", "GitPython>=3.1", "ipython>=8", "setuptools<81"]
 
 [tool.setuptools.packages.find]
 include = ["memintelli*"]
 
 [tool.setuptools]
-zip-safe = false 
+zip-safe = false

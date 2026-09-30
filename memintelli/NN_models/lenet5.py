@@ -9,7 +9,7 @@ from memintelli.NN_layers import Conv2dMem, LinearMem
 from typing import Union, List, Dict, Any, cast, Optional, Type
 
 class LeNet5(nn.Module):
-    def __init__(self, 
+    def __init__(self,
         mem_enabled: bool = True,
         engine: Optional[Any] = None,
         input_slice: Optional[Union[torch.Tensor, list]] = [1, 1, 2, 4],
@@ -65,3 +65,56 @@ class LeNet5(nn.Module):
             if isinstance(module, (LinearMem, Conv2dMem)):
                 module.update_weight()
 
+
+    def prepare_for_inference(self) -> None:
+        """Prepare the model for optimized inference.
+
+        Call after update_weight() and before inference.
+        For lower peak memory, use update_weight_and_prepare() instead.
+        """
+        self.eval()
+        if not self.mem_enabled:
+            return
+        import gc
+        for module in self.modules():
+            if isinstance(module, (Conv2dMem, LinearMem)):
+                module.inference_mode = True
+                module.weight_sliced.inference = True
+                engine = module.engine
+                if engine.write_variation == 0:
+                    module.weight_sliced.compress_G(engine)
+                module.weight_sliced.quantized_data = None
+                module.weight_sliced.sliced_data = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def update_weight_and_prepare(self, streaming: bool = False, free_weights: bool = True) -> None:
+        """Combined update + prepare with minimal peak GPU memory."""
+        self.eval()
+        if not self.mem_enabled:
+            return
+        import gc
+        layer_count = 0
+        for module in self.modules():
+            if isinstance(module, (Conv2dMem, LinearMem)):
+                layer_count += 1
+                engine = module.engine
+                module.weight_sliced.inference = True
+                module.inference_mode = True
+                module.update_weight()
+                if engine.write_variation == 0:
+                    module.weight_sliced.compress_G(engine)
+                if free_weights:
+                    module.weight.data = torch.empty(0, device='cpu', dtype=module.weight.dtype)
+                module.weight_sliced.quantized_data = None
+                module.weight_sliced.sliced_data = None
+                if streaming:
+                    module._streaming = True
+                    module._offload_to_cpu()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        print(f"[LeNet5] Processed {layer_count} memristive layers"
+              f" ({'streaming' if streaming else 'GPU-resident'},"
+              f" weights {'freed' if free_weights else 'kept'})")

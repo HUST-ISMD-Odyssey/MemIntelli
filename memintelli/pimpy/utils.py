@@ -41,7 +41,7 @@ def RE(ytest, ypred):
     return np.sqrt(np.sum((ytest-ypred)**2))/np.sqrt(np.sum(ytest**2))
 
 
-def quant_map_tensor(mat, blk, max_abs_temp_mat = None):
+def quant_map_tensor(mat, blk, max_abs_temp_mat=None, skip_quantized=False):
     """
     convert the data to the quantized data
 
@@ -49,10 +49,13 @@ def quant_map_tensor(mat, blk, max_abs_temp_mat = None):
         mat (torch.Tensor): (batch, num_divide_row, num_divide_col, m, n)
         blk (torch.Tensor): slice method
         max_abs_temp_mat (torch.tensor): the max value of the mat
+        skip_quantized (bool): if True, skip the computation of quantized float data (mat_data),
+                               which is only needed for backward pass. Default: False.
 
     Returns:
         data_int (torch.Tensor): the quantized data, the shape is (batch, num_divide_row_a, num_divide, num_slice ,m , n)
-        mat_data (torch.Tensor): the data quantized by the slice method, the shape is the same as the data
+        mat_data (torch.Tensor or None): the data quantized by the slice method, the shape is the same as the data.
+                                          None if skip_quantized is True.
         max_mat (torch.Tensor): the max value of the data for each quantization granularity, the shape is (batch, num_divide_row_a, num_divide, 1, 1)
         e_bias (torch.Tensor): None, reserved for the block floating point (BFP)
     """
@@ -65,10 +68,11 @@ def quant_map_tensor(mat, blk, max_abs_temp_mat = None):
     else:
         max_mat = max_abs_temp_mat
 
-    matq = torch.round(mat / max_mat * (2 ** (bits - 1) - 1)).int()
-    mat_data = matq / (2 ** (bits - 1) - 1) * max_mat
-    location = torch.where(matq < 0)
-    matq[location] = 2 ** bits + matq[location]
+    safe_max = torch.where(max_mat > 0, max_mat, torch.ones_like(max_mat))
+    matq = torch.round(mat / safe_max * (2 ** (bits - 1) - 1)).int()
+    mat_data = None if skip_quantized else (matq / (2 ** (bits - 1) - 1) * max_mat)
+    # Convert to two's complement: bitwise AND is zero-extra-memory (replaces torch.where + fancy index)
+    matq.bitwise_and_(2 ** bits - 1)
 
     data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]),
                            device=mat.device, dtype=quant_data_type)
@@ -80,7 +84,7 @@ def quant_map_tensor(mat, blk, max_abs_temp_mat = None):
     return data_int, mat_data, max_mat, e_bias
 
 
-def bfp_map_tensor(mat, blk, max_abs_temp_mat=None):
+def bfp_map_tensor(mat, blk, max_abs_temp_mat=None, skip_quantized=False):
     '''
     convert the data to the block floating point (bfp) data
 
@@ -108,13 +112,13 @@ def bfp_map_tensor(mat, blk, max_abs_temp_mat=None):
     e_bias = torch.floor(torch.log2(max_mat + 1e-10))
     matq = mat / 2. ** e_bias
     matq = torch.round(matq * 2. ** (bits - 2))
-    clip_up = (2 ** (bits - 1) - 1).to(mat.device)
-    clip_down = (-2 ** (bits - 1)).to(mat.device)
+    clip_up = 2 ** (bits - 1) - 1
+    clip_down = -2 ** (bits - 1)
     matq = torch.clip(matq, clip_down, clip_up)  # round & clip，clip到-2^(bits-1) ~ 2^(bits-1)-1
-    mat_data = matq * 2. ** (e_bias + 2 - bits)  # mat_data is the dequantized data,
-                                                 # which is used to calculate the error of quantization
-    location = torch.where(matq < 0)
-    matq[location] = 2. ** bits + matq[location]
+    mat_data = None if skip_quantized else (matq * 2. ** (e_bias + 2 - bits))  # dequantized data for backward
+    # Convert to two's complement: bitwise AND is zero-extra-memory
+    matq = matq.int()  # ensure int type for bitwise op
+    matq.bitwise_and_(2 ** bits - 1)
 
     data_int = torch.empty((mat.shape[0], mat.shape[1], mat.shape[2], len(blk), mat.shape[3], mat.shape[4]),
                            device=mat.device, dtype=quant_data_type)

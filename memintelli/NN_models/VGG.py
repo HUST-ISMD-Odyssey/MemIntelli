@@ -1,253 +1,175 @@
 # -*- coding:utf-8 -*-
-# @File  : ResNet.py
-# @Author: Zhou
-# @Date  : 2024/4/1
+# @File  : VGG.py
+# @Author: ZZW
+# @Date  : 2025/02/20
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.model_zoo as model_zoo
-from typing import Union, List, Dict, Any, cast, Optional, Type
+from typing import Union, List, Dict, Any, cast, Optional
 from memintelli.NN_layers import Conv2dMem, LinearMem, tensor_bytes
 
-# Pretrained model URLs
-model_urls = {
-    'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
-    'resnet34': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
-    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
-    'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
-    'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
+# timm model names on HuggingFace (timm/xxx)
+timm_model_names: Dict[str, str] = {
+    'vgg11': 'vgg11.tv_in1k',
+    'vgg13': 'vgg13.tv_in1k',
+    'vgg16': 'vgg16.tv_in1k',
+    'vgg19': 'vgg19.tv_in1k',
+    'vgg11_bn': 'vgg11_bn.tv_in1k',
+    'vgg13_bn': 'vgg13_bn.tv_in1k',
+    'vgg16_bn': 'vgg16_bn.tv_in1k',
+    'vgg19_bn': 'vgg19_bn.tv_in1k',
 }
 
-class BasicBlock(nn.Module):
+
+def _load_timm_pretrained(model: nn.Module, model_name: str) -> None:
+    """Load pretrained weights from timm (HuggingFace: timm/xxx).
+
+    timm VGG uses Conv2d-based ConvMlp for pre_logits and ClassifierHead for head,
+    so we need to remap keys and reshape classifier weights (Conv2d → Linear).
+
+    timm state_dict key mapping:
+        pre_logits.fc1  →  classifier.0   (Conv2d [out, in, 7, 7] → Linear [out, in*7*7])
+        pre_logits.fc2  →  classifier.3   (Conv2d [out, in, 1, 1] → Linear [out, in])
+        head.fc         →  classifier.6   (Linear, same shape)
+        features.*      →  features.*     (same)
     """
-    Basic residual block with optional memristive layers
+    import timm
+
+    timm_name = timm_model_names[model_name]
+    timm_model = timm.create_model(timm_name, pretrained=True)
+    timm_sd = timm_model.state_dict()
+
+    new_sd = {}
+    for k, v in timm_sd.items():
+        if k.startswith('features.'):
+            new_sd[k] = v
+        elif k.startswith('pre_logits.fc1'):
+            new_key = k.replace('pre_logits.fc1', 'classifier.0')
+            if 'weight' in k:
+                # Conv2d weight [out_ch, in_ch, 7, 7] → Linear weight [out_ch, in_ch*7*7]
+                v = v.reshape(v.shape[0], -1)
+            new_sd[new_key] = v
+        elif k.startswith('pre_logits.fc2'):
+            new_key = k.replace('pre_logits.fc2', 'classifier.3')
+            if 'weight' in k:
+                # Conv2d weight [out_ch, in_ch, 1, 1] → Linear weight [out_ch, in_ch]
+                v = v.reshape(v.shape[0], -1)
+            new_sd[new_key] = v
+        elif k.startswith('head.fc'):
+            new_key = k.replace('head.fc', 'classifier.6')
+            new_sd[new_key] = v
+        # skip other timm-specific keys (e.g. head.flatten, etc.)
+
+    model.load_state_dict(new_sd)
+    del timm_model, timm_sd
+    print(f"[VGG] Loaded pretrained weights from timm/{timm_name}")
+
+# Configuration for different VGG architectures
+cfgs: Dict[str, List[Union[str, int]]] = {
+    'vgg11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+    'vgg13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+    'vgg16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
+    'vgg19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M'],
+}
+
+
+class VGG(nn.Module):
+    """
+    Unified VGG model for ImageNet with optional memristive mode.
 
     Args:
-        mem_enabled: Enable memristive layers
+        cfg (str): Architecture configuration key (e.g. 'vgg16', 'vgg16_bn')
+        num_classes (int): Number of output classes
+        batch_norm (bool): Whether to use batch normalization
+        mem_enabled (bool): If True, use memristive engine layers
         mem_args: Dictionary containing memristive parameters
     """
-    expansion = 1
-
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        stride: int = 1,
-        downsample: Optional[nn.Module] = None,
-        mem_enabled: bool = False,
-        mem_args: Optional[Dict[str, Any]] = None
-    ):
-        super().__init__()
-        self.mem_enabled = mem_enabled
-        self.mem_args = mem_args if self.mem_enabled else {}
-
-        # Choose convolutional layer type
-        conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-
-        self.conv1 = conv_layer(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=3,
-            stride=stride, padding=1, bias=False, **mem_args
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = conv_layer(
-            in_channels=out_channels, out_channels=out_channels, kernel_size=3,
-            stride=1, padding=1, bias=False, **mem_args
-        )
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU()
-        self.downsample = downsample
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
-        out = self.relu(out)
-
-        return out
-
-class Bottleneck(nn.Module):
-    """Bottleneck residual block with optional memristive layers"""
-    expansion = 4
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        stride: int = 1,
-        downsample: Optional[nn.Module] = None,
-        mem_enabled: bool = False,
-        mem_args: Optional[Dict[str, Any]] = None
-    ):
-        super().__init__()
-        self.mem_enabled = mem_enabled
-        self.mem_args = mem_args if self.mem_enabled else {}
-
-        conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-
-        self.conv1 = conv_layer(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=1,
-            stride=1, bias=False, **mem_args
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = conv_layer(
-            in_channels=out_channels, out_channels=out_channels, kernel_size=3,
-            stride=stride, padding=1, bias=False, **mem_args
-        )
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.conv3 = conv_layer(
-            in_channels=out_channels, out_channels=out_channels*self.expansion, kernel_size=1,
-            stride=1, bias=False, **mem_args
-        )
-        self.bn3 = nn.BatchNorm2d(out_channels * self.expansion)
-        self.relu = nn.ReLU()
-        self.downsample = downsample
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
-        out = self.relu(out)
-
-        return out
-
-class ResNet(nn.Module):
-    """
-    Unified ResNet model with optional memristive mode
-
-    Args:
-        block: Type of residual block (BasicBlock/Bottleneck)
-        layers: Number of blocks in each layer
-        num_classes: Number of output classes
-        mem_enabled: Enable memristive layers
-        mem_args: Dictionary containing memristive parameters
-    """
-
-    def __init__(
-        self,
-        block: Type[Union[BasicBlock, Bottleneck]],
-        layers: List[int],
+        cfg: str = 'vgg16',
         num_classes: int = 1000,
-        mem_enabled: bool = False,
+        batch_norm: bool = False,
+        mem_enabled: bool = True,
         mem_args: Optional[Dict[str, Any]] = None
     ):
         super().__init__()
         self.mem_enabled = mem_enabled
         self.mem_args = mem_args if self.mem_enabled else {}
-        self.in_channels = 64
+        self.batch_norm = batch_norm
 
-        conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-        self.conv1 = conv_layer(
-            in_channels=3, out_channels=64, kernel_size=7,
-            stride=2, padding=3, bias=False,
-            **self.mem_args
-        )
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU()
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-        # Residual layers
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-
-        # Classifier
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        linear_layer = LinearMem if mem_enabled else nn.Linear
-        self.fc = linear_layer(
-            in_features=512 * block.expansion, out_features=num_classes,
-            **self.mem_args
-        )
+        self.features = self._make_layers(cfgs[cfg])
+        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
+        self.classifier = self._make_classifier(num_classes)
 
         # Weight initialization
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, Conv2dMem)):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.Linear, LinearMem)):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
 
-    def _make_layer(
-        self,
-        block: Type[Union[BasicBlock, Bottleneck]],
-        channels: int,
-        blocks: int,
-        stride: int = 1
-    ) -> nn.Sequential:
-        downsample = None
-        if stride != 1 or self.in_channels != channels * block.expansion:
-            conv_layer = Conv2dMem if self.mem_enabled else nn.Conv2d
-            downsample = nn.Sequential(
-                conv_layer(
-                    in_channels=self.in_channels, out_channels=channels * block.expansion,
-                    kernel_size=1, stride=stride, bias=False,
-                    **self.mem_args
-                ),
-                nn.BatchNorm2d(channels * block.expansion),
-            )
-
+    def _make_layers(self, cfg: List[Union[str, int]]) -> nn.Sequential:
+        """Construct feature extraction layers."""
         layers = []
-        layers.append(block(
-            self.in_channels, channels,
-            stride=stride,
-            downsample=downsample,
-            mem_enabled=self.mem_enabled,
-            mem_args=self.mem_args
-        ))
-        self.in_channels = channels * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(
-                self.in_channels, channels,
-                mem_enabled=self.mem_enabled,
-                mem_args=self.mem_args
-            ))
+        in_channels = 3
+
+        for v in cfg:
+            if v == 'M':
+                layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            else:
+                v = cast(int, v)
+                if self.mem_enabled:
+                    conv_layer = Conv2dMem(
+                        **self.mem_args, in_channels=in_channels, out_channels=v,
+                        kernel_size=3, padding=1, skip_initial_mapping=True
+                    )
+                else:
+                    conv_layer = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+
+                if self.batch_norm:
+                    layers.extend([conv_layer, nn.BatchNorm2d(v), nn.ReLU(inplace=True)])
+                else:
+                    layers.extend([conv_layer, nn.ReLU(inplace=True)])
+
+                in_channels = v
 
         return nn.Sequential(*layers)
 
+    def _make_classifier(self, num_classes: int) -> nn.Sequential:
+        """Construct classification head (ImageNet-style with 4096 hidden units)."""
+        linear = LinearMem if self.mem_enabled else nn.Linear
+        mem_args = self.mem_args if self.mem_enabled else {}
+        # Add skip_initial_mapping for LinearMem to avoid computing G from random weights
+        if self.mem_enabled:
+            mem_args = {**mem_args, 'skip_initial_mapping': True}
+
+        return nn.Sequential(
+            linear(in_features=512 * 7 * 7, out_features=4096, **mem_args),
+            nn.ReLU(True),
+            nn.Dropout(),
+            linear(in_features=4096, out_features=4096, **mem_args),
+            nn.ReLU(True),
+            nn.Dropout(),
+            linear(in_features=4096, out_features=num_classes, **mem_args),
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
+        """Forward pass implementation."""
+        x = self.features(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.fc(x)
-
+        x = self.classifier(x)
         return x
 
     def update_weight(self) -> None:
-        """Update weights for memristive layers (if enabled)"""
+        """Update weights for memristive layers (if enabled)."""
         if not self.mem_enabled:
             return
 
@@ -287,6 +209,7 @@ class ResNet(nn.Module):
 
         Phase 1: For each layer sequentially:
           weight → GPU → compute G → compress → offload G to pinned CPU → free weight
+          Peak GPU = ONE layer's (weight + G + intermediates) at any time.
 
         Phase 2: Decide strategy and selectively load G back to GPU:
           - False:  load ALL G back to GPU (fastest inference)
@@ -336,6 +259,7 @@ class ResNet(nn.Module):
                 if module.weight_slice_method.device != engine_device:
                     module.weight_slice_method = module.weight_slice_method.to(engine_device)
 
+                # CRITICAL: Always offload G to pinned CPU immediately after computing!
                 module._offload_to_cpu()
 
                 all_mem_layers.append(module)
@@ -373,7 +297,7 @@ class ResNet(nn.Module):
                           - pending_cpu_bytes)
             budget_gb = gpu_budget / 1024**3
             pending_gb = pending_cpu_bytes / 1024**3
-            print(f"[ResNet] {auto_mode}: GPU {gpu_total/1024**3:.1f}GB total, "
+            print(f"[VGG] {auto_mode}: GPU {gpu_total/1024**3:.1f}GB total, "
                   f"{gpu_used/1024**3:.1f}GB used, "
                   f"{pending_gb:.1f}GB pending, "
                   f"{gpu_memory_reserve:.0f}GB reserved → "
@@ -381,7 +305,7 @@ class ResNet(nn.Module):
 
             if total_g_bytes <= gpu_budget:
                 streaming = False
-                print(f"[ResNet] {auto_mode}: ALL G ({total_g_gb:.1f}GB) fits → GPU-resident (fastest)")
+                print(f"[VGG] {auto_mode}: ALL G ({total_g_gb:.1f}GB) fits → GPU-resident (fastest)")
             else:
                 indexed = sorted(
                     range(len(layer_g_sizes)),
@@ -424,7 +348,7 @@ class ResNet(nn.Module):
 
                 resident_count = layer_count - len(offload_set)
                 resident_gb = (total_g_bytes - offloaded_bytes) / 1024**3
-                print(f"[ResNet] {auto_mode}: partial: {resident_count} GPU-resident ({resident_gb:.1f}GB), "
+                print(f"[VGG] {auto_mode}: partial: {resident_count} GPU-resident ({resident_gb:.1f}GB), "
                       f"{len(offload_set)} streaming ({offloaded_bytes/1024**3:.1f}GB)")
                 streaming = "partial_done"
 
@@ -432,12 +356,12 @@ class ResNet(nn.Module):
             for m in all_mem_layers:
                 m._load_to_device(engine_device)
                 m._pinned_buffers.clear()
-            print(f"[ResNet] Processed {layer_count} layers → GPU-resident "
+            print(f"[VGG] Processed {layer_count} layers → GPU-resident "
                   f"({total_g_gb:.1f}GB G on GPU, weights {'freed' if free_weights else 'kept'})")
         elif streaming is True:
             for m in all_mem_layers:
                 m._streaming = True
-            print(f"[ResNet] Processed {layer_count} layers → full streaming "
+            print(f"[VGG] Processed {layer_count} layers → full streaming "
                   f"({total_g_gb:.1f}GB G on CPU, weights {'freed' if free_weights else 'kept'})")
 
         # ─── Phase 3: Build async prefetch chain for streaming layers ───
@@ -446,10 +370,11 @@ class ResNet(nn.Module):
             for i in range(len(streaming_layers) - 1):
                 object.__setattr__(streaming_layers[i], '_next_streaming_layer', streaming_layers[i + 1])
             object.__setattr__(streaming_layers[-1], '_next_streaming_layer', streaming_layers[0])
-            print(f"[ResNet] Async prefetch chain: {len(streaming_layers)} streaming layers linked")
+            print(f"[VGG] Async prefetch chain: {len(streaming_layers)} streaming layers linked")
 
-def ResNet_zoo(
-    model_name: str = 'resnet18',
+
+def VGG_zoo(
+    model_name: str = 'vgg16',
     num_classes: int = 1000,
     pretrained: bool = False,
     mem_enabled: bool = False,
@@ -462,12 +387,12 @@ def ResNet_zoo(
     weight_paral_size: Optional[Union[torch.Tensor, list]] = (32, 32),
     input_quant_gran: Optional[Union[torch.Tensor, list]] = (1, 64),
     weight_quant_gran: Optional[Union[torch.Tensor, list]] = (64, 64)
-) -> ResNet:
+) -> VGG:
     """
-    ResNet model factory
+    VGG model factory for ImageNet.
 
     Args:
-        model_name (str): Model architecture name
+        model_name (str): Model architecture name (e.g. 'vgg16', 'vgg16_bn')
         num_classes (int): Number of output classes
         pretrained (bool): Load pretrained weights
         mem_enabled (bool): Enable memristive mode
@@ -475,8 +400,11 @@ def ResNet_zoo(
         input_slice (Optional[torch.Tensor, list]): Input tensor slicing configuration
         weight_slice (Optional[torch.Tensor, list]): Weight tensor slicing configuration
         device (Optional[Any]): Computation device (CPU/GPU)
-        bw_e (Optional[Any]): if bw_e is None, the memristive engine is INT mode, otherwise, the memristive engine is FP mode (bw_e is the bitwidth of the exponent)
+        bw_e (Optional[Any]): if bw_e is None, the memristive engine is INT mode,
+            otherwise, the memristive engine is FP mode (bw_e is the bitwidth of the exponent)
 
+    Returns:
+        VGG: Configured VGG model instance
     """
     mem_args = {
         "engine": engine,
@@ -487,31 +415,26 @@ def ResNet_zoo(
         "input_paral_size": input_paral_size,
         "weight_paral_size": weight_paral_size,
         "input_quant_gran": input_quant_gran,
-        "weight_quant_gran": weight_quant_gran,
-        "skip_initial_mapping": True,
+        "weight_quant_gran": weight_quant_gran
     } if mem_enabled else {}
-    # Architecture configuration
-    model_params: Dict[str, Any] = {
-        'resnet18': (BasicBlock, [2, 2, 2, 2]),
-        'resnet34': (BasicBlock, [3, 4, 6, 3]),
-        'resnet50': (Bottleneck, [3, 4, 6, 3]),
-        'resnet101': (Bottleneck, [3, 4, 23, 3]),
-        'resnet152': (Bottleneck, [3, 8, 36, 3])
-    }
 
-    if model_name not in model_params:
-        raise ValueError(f"Invalid model name: {model_name}")
+    if model_name not in timm_model_names:
+        raise ValueError(f"Invalid model name: {model_name}. "
+                         f"Choose from {list(timm_model_names.keys())}")
 
-    block, layers = model_params[model_name]
-    model = ResNet(
-        block=block,
-        layers=layers,
+    # Determine base config and whether to use batch norm
+    batch_norm = model_name.endswith('_bn')
+    base_cfg = model_name.replace('_bn', '') if batch_norm else model_name
+
+    model = VGG(
+        cfg=base_cfg,
         num_classes=num_classes,
+        batch_norm=batch_norm,
         mem_enabled=mem_enabled,
         mem_args=mem_args
     )
 
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls[model_name]))
+        _load_timm_pretrained(model, model_name)
 
     return model

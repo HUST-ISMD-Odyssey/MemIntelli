@@ -9,6 +9,15 @@ from memintelli.pimpy.data_formats import SlicedData
 import time
 from matplotlib import pyplot as plt
 
+
+def _move_tensor_like(value, device):
+    if value is None:
+        return None
+    if isinstance(value, tuple):
+        return tuple(_move_tensor_like(item, device) for item in value)
+    return value.to(device)
+
+
 # build gradient function for map-reduce dot
 class MapReduceDot(torch.autograd.Function):
     @staticmethod
@@ -35,19 +44,32 @@ class LinearMemRunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, engine, input, weight, input_slice:SlicedData, weight_slice:SlicedData, bias):
         # here, the  input and weight is input for the bp process
-        ctx.save_for_backward(input_slice.quantized_data, weight_slice.quantized_data, bias)
+        input_quant = input_slice.quantized_data
+        weight_quant = weight_slice.quantized_data
+        if input_quant is None:
+            input_quant = input.detach().to(engine.device)
+        if weight_quant is None:
+            weight_quant = weight.detach().t().to(engine.device)
+        bias_to_save = bias if bias is not None else torch.empty(0, device=input.device)
+        ctx.has_bias = bias is not None
+        ctx.save_for_backward(input_quant, weight_quant, bias_to_save)
         # the transpose of the weight is used to match the F.linear
         input = input.to(engine.device)
         weight = weight.to(engine.device)
-        input_slice.sliced_data = input_slice.sliced_data.to(engine.device)
-        input_slice.quantized_data = input_slice.quantized_data.to(engine.device)
-        input_slice.max_data = input_slice.max_data.to(engine.device)
-        input_slice.e_bias = input_slice.e_bias.to(engine.device) if input_slice.e_bias is not None else None
-        
-        weight_slice.sliced_data = weight_slice.sliced_data.to(engine.device)
-        weight_slice.quantized_data = weight_slice.quantized_data.to(engine.device)
-        weight_slice.max_data = weight_slice.max_data.to(engine.device)
-        weight_slice.e_bias = weight_slice.e_bias.to(engine.device) if weight_slice.e_bias is not None else None
+        for attr in (
+            "sliced_data", "sliced_data_p", "sliced_data_n",
+            "quantized_data", "quantized_data_p", "quantized_data_n",
+            "max_data", "max_data_p", "max_data_n", "e_bias",
+        ):
+            setattr(input_slice, attr, _move_tensor_like(getattr(input_slice, attr, None), engine.device))
+
+        for attr in (
+            "sliced_data", "sliced_data_p", "sliced_data_n",
+            "quantized_data", "quantized_data_p", "quantized_data_n",
+            "max_data", "max_data_p", "max_data_n", "e_bias",
+            "G", "G_indices", "mode1_w_max",
+        ):
+            setattr(weight_slice, attr, _move_tensor_like(getattr(weight_slice, attr, None), engine.device))
         output = engine.MapReduceDot(input_slice, weight_slice)
         if bias is not None:
             output += bias.to(engine.device)
@@ -58,6 +80,8 @@ class LinearMemRunc(torch.autograd.Function):
         # in the forward, the calculation has considered the dot engine
         # so in the backward, we directly calculate the gradient of the weight and bias
         input_quant, weight_quant, bias = ctx.saved_tensors
+        if not ctx.has_bias:
+            bias = None
         grad_input = grad_weight = grad_bias = None
         weight_quant = weight_quant.to(grad_output.device)
         input_quant = input_quant.to(grad_output.device)
@@ -124,7 +148,21 @@ class Conv2dMemRunc(torch.autograd.Function):
         # W_out = (W_in + 2*padding[1] - dilation[1] * (kernel_size[1] - 1) - 1) / stride[1] + 1
         # todo: varify numpy.lib.stride_tricks.as_strided : https://zhuanlan.zhihu.com/p/64933417
         input_shape = input.shape
-        ctx.save_for_backward(input_sliced.quantized_data, weight_sliced.quantized_data, bias,
+        input_quant = input_sliced.quantized_data
+        weight_quant = weight_sliced.quantized_data
+        if input_quant is None:
+            input_quant = F.unfold(
+                input.detach(),
+                kernel_size=weight.shape[2:],
+                stride=stride,
+                padding=padding,
+                dilation=dilation,
+            ).transpose(1, 2)
+        if weight_quant is None:
+            weight_quant = weight.detach().reshape(weight.shape[0], -1).t()
+        bias_to_save = bias if bias is not None else torch.empty(0, device=input.device)
+        ctx.has_bias = bias is not None
+        ctx.save_for_backward(input_quant, weight_quant, bias_to_save,
                               torch.tensor(input.shape), torch.tensor(weight.shape))
 
         h_out = int((input_shape[2] + 2 * padding[0] - dilation[0] * (weight.shape[2] - 1) - 1) / stride[0] + 1)
@@ -142,13 +180,15 @@ class Conv2dMemRunc(torch.autograd.Function):
         # in the forward, the calculation has considered the dot engine
         # so in the backward, we directly calculate the gradient of the weight and bias
         input_quant, weight_quant, bias, input_shape, weight_shape = ctx.saved_tensors
+        if not ctx.has_bias:
+            bias = None
 
         # calculate the overlapped block values during unfold-fold.
         ones = torch.ones(torch.Size(input_shape), device=input_quant.device)
         ones = F.unfold(ones, kernel_size=weight_shape[2:], stride=ctx.stride, padding=ctx.padding, dilation=ctx.dilation)
         ones = F.fold(ones, output_size=(input_shape[2], input_shape[3]), kernel_size=weight_shape[2:],
                       stride=ctx.stride, padding=ctx.padding, dilation=ctx.dilation)
-        
+
         ones[torch.where(ones==0)] = 1
         #ones = torch.where(ones == 0, torch.ones_like(ones), ones)
 
@@ -211,12 +251,12 @@ class Conv2dMemRunc(torch.autograd.Function):
         #     grad_output_p = grad_output.reshape([grad_shape[0], grad_shape[1], -1]).transpose(1,2)    # [b, E'*F', Cout]
 
         #     weight_quant_p = weight_quant.transpose(0,1)    # [Cout, Cin*kH*kW]
-            
+
         #     # use torch.matmul
         #     grad_input_p = torch.matmul(grad_output_p, weight_quant_p)    # [b, E'*F', Cin*kH*kW]
         #     grad_input_p = grad_input_p.transpose(1,2).reshape([grad_shape[0], input_shape[1], weight_shape[2], weight_shape[3], grad_shape[2], grad_shape[3]]) # [b, Cin, kH, kW, E', F']
 
-        #     grad_input = torch.zeros(grad_input_p.shape[0], grad_input_p.shape[1], grad_input_p.shape[2], grad_input_p.shape[3], 
+        #     grad_input = torch.zeros(grad_input_p.shape[0], grad_input_p.shape[1], grad_input_p.shape[2], grad_input_p.shape[3],
         #                              grad_input_p.shape[4]+weight_shape_dilated[2]-1, grad_input_p.shape[5]+weight_shape_dilated[3]-1, device=grad_input_p.device)
 
         #     for iH in range(weight_shape[2]):

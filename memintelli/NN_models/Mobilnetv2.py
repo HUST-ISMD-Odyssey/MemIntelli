@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Union, List, Dict, Any, Optional
 from torch.hub import load_state_dict_from_url
-from memintelli.NN_layers import Conv2dMem, LinearMem
+from memintelli.NN_layers import Conv2dMem, LinearMem, tensor_bytes
 
 # Pretrained model URLs
 model_urls = {
@@ -19,7 +19,7 @@ model_urls = {
 class InvertedResidual(nn.Module):
     """
     Inverted Residual block with optional memristive layers
-    
+
     Args:
         inp (int): Number of input channels
         oup (int): Number of output channels
@@ -49,7 +49,7 @@ class InvertedResidual(nn.Module):
 
         layers = []
         conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
-        
+
         if expand_ratio != 1:
             # Pointwise expansion
             if mem_enabled:
@@ -61,12 +61,12 @@ class InvertedResidual(nn.Module):
                 layers.append(nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False))
             layers.append(nn.BatchNorm2d(hidden_dim))
             layers.append(nn.ReLU6(inplace=True))
-        
+
         # Depthwise convolution - always use standard conv with groups
         layers.append(nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False))
         layers.append(nn.BatchNorm2d(hidden_dim))
         layers.append(nn.ReLU6(inplace=True))
-        
+
         # Pointwise linear projection
         if mem_enabled:
             layers.append(conv_layer(
@@ -76,7 +76,7 @@ class InvertedResidual(nn.Module):
         else:
             layers.append(nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False))
         layers.append(nn.BatchNorm2d(oup))
-        
+
         self.conv = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -89,7 +89,7 @@ class InvertedResidual(nn.Module):
 class MobileNetV2(nn.Module):
     """
     MobileNetV2 model with optional memristive mode
-    
+
     Args:
         num_classes (int): Number of output classes
         width_mult (float): Width multiplier for channel dimensions
@@ -137,11 +137,11 @@ class MobileNetV2(nn.Module):
         # Building first layer
         input_channel = self._make_divisible(input_channel * width_mult, round_nearest)
         self.last_channel = self._make_divisible(last_channel * max(1.0, width_mult), round_nearest)
-        
+
         # First conv layer - wrap in Sequential to match pretrained model structure
         conv_layer = Conv2dMem if mem_enabled else nn.Conv2d
         features = []
-        
+
         # Add first conv layer wrapped in Sequential (features.0)
         first_conv_layers = []
         if mem_enabled:
@@ -168,7 +168,7 @@ class MobileNetV2(nn.Module):
 
         # Make it nn.Sequential (without last conv layer)
         self.features = nn.Sequential(*features)
-        
+
         # Building last conv layer as a separate Sequential to match pretrained model structure
         last_conv_layers = []
         if mem_enabled:
@@ -239,10 +239,194 @@ class MobileNetV2(nn.Module):
         for module in self.modules():
             if isinstance(module, (Conv2dMem, LinearMem)):
                 module.update_weight()
-    
-    
 
 
+
+
+
+    def prepare_for_inference(self) -> None:
+        """Prepare the model for optimized inference.
+
+        Call after update_weight() and before inference.
+        For lower peak memory, use update_weight_and_prepare() instead.
+        """
+        self.eval()
+        if not self.mem_enabled:
+            return
+        import gc
+        for module in self.modules():
+            if isinstance(module, (Conv2dMem, LinearMem)):
+                module.inference_mode = True
+                module.weight_sliced.inference = True
+                engine = module.engine
+                if engine.write_variation == 0:
+                    module.weight_sliced.compress_G(engine)
+                module.weight_sliced.quantized_data = None
+                module.weight_sliced.sliced_data = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def update_weight_and_prepare(self, streaming=False, free_weights: bool = True,
+                                   gpu_memory_reserve: float = 4.0) -> None:
+        """Combined update + prepare that minimizes peak GPU memory.
+
+        Architecture: 3-phase pipeline (same as Qwen3).
+
+        Phase 1: For each layer sequentially:
+          weight → GPU → compute G → compress → offload G to pinned CPU → free weight
+
+        Phase 2: Decide strategy and selectively load G back to GPU:
+          - False:  load ALL G back to GPU (fastest inference)
+          - True:   keep ALL on CPU, stream per-layer (lowest memory)
+          - "auto": load as many as GPU allows, stream the rest (best tradeoff)
+
+        Phase 3: Build async prefetch chain for streaming layers.
+        """
+        self.eval()
+        if not self.mem_enabled:
+            return
+
+        import gc
+
+        # ─── Phase 1: Compute G for all layers, ALWAYS offload to CPU immediately ───
+        all_mem_layers = []
+        layer_count = 0
+        engine_device = None
+        for module in self.modules():
+            if isinstance(module, (Conv2dMem, LinearMem)):
+                layer_count += 1
+                engine = module.engine
+                engine_device = engine.device
+
+                module.weight_sliced.inference = True
+                module.inference_mode = True
+                module.update_weight()
+
+                if engine.write_variation == 0:
+                    module.weight_sliced.compress_G(engine)
+
+                if free_weights:
+                    module.weight.data = torch.empty(0, device='cpu', dtype=module.weight.dtype)
+
+                module.weight_sliced.quantized_data = None
+                module.weight_sliced.sliced_data = None
+
+                if module.bias is not None and module.bias.device != engine_device:
+                    module.bias.data = module.bias.data.to(engine_device)
+                if module.input_slice_method.device != engine_device:
+                    module.input_slice_method = module.input_slice_method.to(engine_device)
+                if module.weight_slice_method.device != engine_device:
+                    module.weight_slice_method = module.weight_slice_method.to(engine_device)
+
+                module._offload_to_cpu()
+
+                all_mem_layers.append(module)
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        if not all_mem_layers:
+            return
+
+        # ─── Phase 2: Decide streaming strategy and load GPU-resident layers ───
+        layer_g_sizes = []
+        total_g_bytes = 0
+        for m in all_mem_layers:
+            sz = 0
+            for attr in ('G_indices', 'G', 'max_data', 'e_bias'):
+                t = m._pinned_buffers.get(attr)
+                sz += tensor_bytes(t)
+            layer_g_sizes.append(sz)
+            total_g_bytes += sz
+
+        total_g_gb = total_g_bytes / 1024**3
+
+        auto_mode = "auto_memory" if streaming == "auto" else streaming
+        if auto_mode in ("auto_memory", "auto_speed") and torch.cuda.is_available():
+            gpu_total = torch.cuda.get_device_properties(engine_device).total_memory
+            gpu_used = torch.cuda.memory_allocated(engine_device)
+            pending_cpu_bytes = sum(
+                p.numel() * p.element_size()
+                for p in self.parameters()
+                if p.device.type == 'cpu' and p.numel() > 0
+            )
+            gpu_budget = (gpu_total - gpu_used
+                          - int(gpu_memory_reserve * 1024**3)
+                          - pending_cpu_bytes)
+            budget_gb = gpu_budget / 1024**3
+            print(f"[MobileNetV2] {auto_mode}: GPU {gpu_total/1024**3:.1f}GB total, "
+                  f"{gpu_used/1024**3:.1f}GB used, "
+                  f"{gpu_memory_reserve:.0f}GB reserved → "
+                  f"budget {budget_gb:.1f}GB for G")
+
+            if total_g_bytes <= gpu_budget:
+                streaming = False
+                print(f"[MobileNetV2] {auto_mode}: ALL G ({total_g_gb:.1f}GB) fits → GPU-resident")
+            else:
+                indexed = sorted(
+                    range(len(layer_g_sizes)),
+                    key=lambda i: layer_g_sizes[i],
+                    reverse=(auto_mode == "auto_memory"),
+                )
+                need_to_offload = max(0, total_g_bytes - gpu_budget)
+                offloaded_bytes = 0
+                offload_set = set()
+                for idx in indexed:
+                    if offloaded_bytes >= need_to_offload:
+                        break
+                    offload_set.add(idx)
+                    offloaded_bytes += layer_g_sizes[idx]
+
+                if offload_set:
+                    max_stream_size = max(layer_g_sizes[i] for i in offload_set)
+                    resident_bytes = total_g_bytes - offloaded_bytes
+                    while resident_bytes + max_stream_size > gpu_budget:
+                        resident_indices = [i for i in range(len(all_mem_layers))
+                                            if i not in offload_set]
+                        if not resident_indices:
+                            break
+                        selected = (
+                            max(resident_indices, key=lambda i: layer_g_sizes[i])
+                            if auto_mode == "auto_memory"
+                            else min(resident_indices, key=lambda i: layer_g_sizes[i])
+                        )
+                        offload_set.add(selected)
+                        offloaded_bytes += layer_g_sizes[selected]
+                        resident_bytes -= layer_g_sizes[selected]
+                        max_stream_size = max(layer_g_sizes[i] for i in offload_set)
+
+                for i, m in enumerate(all_mem_layers):
+                    if i in offload_set:
+                        m._streaming = True
+                    else:
+                        m._load_to_device(engine_device)
+                        m._pinned_buffers.clear()
+
+                resident_count = layer_count - len(offload_set)
+                print(f"[MobileNetV2] {auto_mode}: partial: {resident_count} GPU-resident, "
+                      f"{len(offload_set)} streaming")
+                streaming = "partial_done"
+
+        if streaming is False:
+            for m in all_mem_layers:
+                m._load_to_device(engine_device)
+                m._pinned_buffers.clear()
+            print(f"[MobileNetV2] Processed {layer_count} layers → GPU-resident "
+                  f"({total_g_gb:.1f}GB G on GPU, weights {'freed' if free_weights else 'kept'})")
+        elif streaming is True:
+            for m in all_mem_layers:
+                m._streaming = True
+            print(f"[MobileNetV2] Processed {layer_count} layers → full streaming "
+                  f"({total_g_gb:.1f}GB G on CPU, weights {'freed' if free_weights else 'kept'})")
+
+        # ─── Phase 3: Build async prefetch chain for streaming layers ───
+        streaming_layers = [m for m in all_mem_layers if m._streaming]
+        if streaming_layers:
+            for i in range(len(streaming_layers) - 1):
+                object.__setattr__(streaming_layers[i], '_next_streaming_layer', streaming_layers[i + 1])
+            object.__setattr__(streaming_layers[-1], '_next_streaming_layer', streaming_layers[0])
+            print(f"[MobileNetV2] Async prefetch chain: {len(streaming_layers)} streaming layers linked")
 def MobileNetV2_zoo(
     model_name: str = 'mobilenet_v2',
     num_classes: int = 1000,
@@ -261,7 +445,7 @@ def MobileNetV2_zoo(
 ) -> MobileNetV2:
     """
     MobileNetV2 model factory
-    
+
     Args:
         model_name (str): Model architecture name (currently only 'mobilenet_v2')
         num_classes (int): Number of output classes
@@ -272,20 +456,20 @@ def MobileNetV2_zoo(
         input_slice (Optional[torch.Tensor, list]): Input tensor slicing configuration
         weight_slice (Optional[torch.Tensor, list]): Weight tensor slicing configuration
         device (Optional[Any]): Computation device (CPU/GPU)
-        bw_e (Optional[Any]): If bw_e is None, the memristive engine is INT mode, 
+        bw_e (Optional[Any]): If bw_e is None, the memristive engine is INT mode,
                              otherwise, the memristive engine is FP mode (bw_e is the bitwidth of the exponent)
         input_paral_size (Optional[torch.Tensor, list]): Input parallelization size
         weight_paral_size (Optional[torch.Tensor, list]): Weight parallelization size
         input_quant_gran (Optional[torch.Tensor, list]): Input quantization granularity
         weight_quant_gran (Optional[torch.Tensor, list]): Weight quantization granularity
-    
+
     Returns:
         MobileNetV2: Configured MobileNetV2 model
-    
+
     Example:
         >>> # Standard PyTorch model
         >>> model = MobileNetV2_zoo('mobilenet_v2', num_classes=1000, pretrained=True)
-        >>> 
+        >>>
         >>> # Memristive model
         >>> from memintelli.pimpy import MemIntelli
         >>> engine = MemIntelli(device='cuda')
@@ -300,7 +484,8 @@ def MobileNetV2_zoo(
         "input_paral_size": input_paral_size,
         "weight_paral_size": weight_paral_size,
         "input_quant_gran": input_quant_gran,
-        "weight_quant_gran": weight_quant_gran
+        "weight_quant_gran": weight_quant_gran,
+        "skip_initial_mapping": True,
     } if mem_enabled else {}
 
     if model_name not in model_urls:

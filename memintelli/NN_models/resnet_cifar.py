@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Union, List, Dict, Any, cast, Optional, Type
 from torch.hub import load_state_dict_from_url
-from memintelli.NN_layers import Conv2dMem, LinearMem
+from memintelli.NN_layers import Conv2dMem, LinearMem, tensor_bytes
 
 resnet_pretrained_urls = {
     10: {
@@ -222,7 +222,7 @@ class ResNet_CIFAR(nn.Module):
         x = self.fc(x)
 
         return x
-    
+
     def update_weight(self) -> None:
         """Update weights for memory-efficient layers (if enabled)."""
         if not self.mem_enabled:
@@ -232,6 +232,192 @@ class ResNet_CIFAR(nn.Module):
             if isinstance(module, (LinearMem, Conv2dMem)):
                 module.update_weight()
 
+
+    def prepare_for_inference(self) -> None:
+        """Prepare the model for optimized inference.
+
+        Call after update_weight() and before inference.
+        For lower peak memory, use update_weight_and_prepare() instead.
+        """
+        self.eval()
+        if not self.mem_enabled:
+            return
+        import gc
+        for module in self.modules():
+            if isinstance(module, (Conv2dMem, LinearMem)):
+                module.inference_mode = True
+                module.weight_sliced.inference = True
+                engine = module.engine
+                if engine.write_variation == 0:
+                    module.weight_sliced.compress_G(engine)
+                module.weight_sliced.quantized_data = None
+                module.weight_sliced.sliced_data = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def update_weight_and_prepare(self, streaming=False, free_weights: bool = True,
+                                   gpu_memory_reserve: float = 4.0) -> None:
+        """Combined update + prepare that minimizes peak GPU memory.
+
+        Architecture: 3-phase pipeline (same as Qwen3).
+
+        Phase 1: For each layer sequentially:
+          weight → GPU → compute G → compress → offload G to pinned CPU → free weight
+
+        Phase 2: Decide strategy and selectively load G back to GPU:
+          - False:  load ALL G back to GPU (fastest inference)
+          - True:   keep ALL on CPU, stream per-layer (lowest memory)
+          - "auto": load as many as GPU allows, stream the rest (best tradeoff)
+
+        Phase 3: Build async prefetch chain for streaming layers.
+
+        Args:
+            streaming: False | True | "auto" (see above)
+            free_weights: If True (default), free nn.Parameter weight data after G.
+            gpu_memory_reserve: GB reserved for activations when streaming="auto".
+        """
+        self.eval()
+        if not self.mem_enabled:
+            return
+
+        import gc
+
+        # ─── Phase 1: Compute G for all layers, ALWAYS offload to CPU immediately ───
+        all_mem_layers = []
+        layer_count = 0
+        engine_device = None
+        for module in self.modules():
+            if isinstance(module, (Conv2dMem, LinearMem)):
+                layer_count += 1
+                engine = module.engine
+                engine_device = engine.device
+
+                module.weight_sliced.inference = True
+                module.inference_mode = True
+                module.update_weight()
+
+                if engine.write_variation == 0:
+                    module.weight_sliced.compress_G(engine)
+
+                if free_weights:
+                    module.weight.data = torch.empty(0, device='cpu', dtype=module.weight.dtype)
+
+                module.weight_sliced.quantized_data = None
+                module.weight_sliced.sliced_data = None
+
+                if module.bias is not None and module.bias.device != engine_device:
+                    module.bias.data = module.bias.data.to(engine_device)
+                if module.input_slice_method.device != engine_device:
+                    module.input_slice_method = module.input_slice_method.to(engine_device)
+                if module.weight_slice_method.device != engine_device:
+                    module.weight_slice_method = module.weight_slice_method.to(engine_device)
+
+                module._offload_to_cpu()
+
+                all_mem_layers.append(module)
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        if not all_mem_layers:
+            return
+
+        # ─── Phase 2: Decide streaming strategy and load GPU-resident layers ───
+        layer_g_sizes = []
+        total_g_bytes = 0
+        for m in all_mem_layers:
+            sz = 0
+            for attr in ('G_indices', 'G', 'max_data', 'e_bias'):
+                t = m._pinned_buffers.get(attr)
+                sz += tensor_bytes(t)
+            layer_g_sizes.append(sz)
+            total_g_bytes += sz
+
+        total_g_gb = total_g_bytes / 1024**3
+
+        auto_mode = "auto_memory" if streaming == "auto" else streaming
+        if auto_mode in ("auto_memory", "auto_speed") and torch.cuda.is_available():
+            gpu_total = torch.cuda.get_device_properties(engine_device).total_memory
+            gpu_used = torch.cuda.memory_allocated(engine_device)
+            pending_cpu_bytes = sum(
+                p.numel() * p.element_size()
+                for p in self.parameters()
+                if p.device.type == 'cpu' and p.numel() > 0
+            )
+            gpu_budget = (gpu_total - gpu_used
+                          - int(gpu_memory_reserve * 1024**3)
+                          - pending_cpu_bytes)
+            budget_gb = gpu_budget / 1024**3
+            print(f"[ResNet_CIFAR] {auto_mode}: GPU {gpu_total/1024**3:.1f}GB total, "
+                  f"{gpu_used/1024**3:.1f}GB used, "
+                  f"{gpu_memory_reserve:.0f}GB reserved → "
+                  f"budget {budget_gb:.1f}GB for G")
+
+            if total_g_bytes <= gpu_budget:
+                streaming = False
+                print(f"[ResNet_CIFAR] {auto_mode}: ALL G ({total_g_gb:.1f}GB) fits → GPU-resident")
+            else:
+                indexed = sorted(
+                    range(len(layer_g_sizes)),
+                    key=lambda i: layer_g_sizes[i],
+                    reverse=(auto_mode == "auto_memory"),
+                )
+                need_to_offload = max(0, total_g_bytes - gpu_budget)
+                offloaded_bytes = 0
+                offload_set = set()
+                for idx in indexed:
+                    if offloaded_bytes >= need_to_offload:
+                        break
+                    offload_set.add(idx)
+                    offloaded_bytes += layer_g_sizes[idx]
+
+                if offload_set:
+                    max_stream_size = max(layer_g_sizes[i] for i in offload_set)
+                    resident_bytes = total_g_bytes - offloaded_bytes
+                    while resident_bytes + max_stream_size > gpu_budget:
+                        resident_indices = [i for i in range(len(all_mem_layers))
+                                            if i not in offload_set]
+                        if not resident_indices:
+                            break
+                        selected = (
+                            max(resident_indices, key=lambda i: layer_g_sizes[i])
+                            if auto_mode == "auto_memory"
+                            else min(resident_indices, key=lambda i: layer_g_sizes[i])
+                        )
+                        offload_set.add(selected)
+                        offloaded_bytes += layer_g_sizes[selected]
+                        resident_bytes -= layer_g_sizes[selected]
+                        max_stream_size = max(layer_g_sizes[i] for i in offload_set)
+
+                for i, m in enumerate(all_mem_layers):
+                    if i in offload_set:
+                        m._streaming = True
+                    else:
+                        m._load_to_device(engine_device)
+                        m._pinned_buffers.clear()
+                resident_count = layer_count - len(offload_set)
+                print(f"[ResNet_CIFAR] {auto_mode}: partial: {resident_count} GPU-resident, "
+                      f"{len(offload_set)} streaming")
+                streaming = "partial_done"
+
+        if streaming is False:
+            for m in all_mem_layers:
+                m._load_to_device(engine_device)
+                m._pinned_buffers.clear()
+            print(f"[ResNet_CIFAR] {layer_count} layers → GPU-resident ({total_g_gb:.1f}GB G)")
+        elif streaming is True:
+            for m in all_mem_layers:
+                m._streaming = True
+            print(f"[ResNet_CIFAR] {layer_count} layers → streaming ({total_g_gb:.1f}GB G on CPU)")
+
+        # ─── Phase 3: Build async prefetch chain for streaming layers ───
+        streaming_layers = [m for m in all_mem_layers if m._streaming]
+        if streaming_layers:
+            for i in range(len(streaming_layers) - 1):
+                object.__setattr__(streaming_layers[i], '_next_streaming_layer', streaming_layers[i + 1])
+            object.__setattr__(streaming_layers[-1], '_next_streaming_layer', streaming_layers[0])
+            print(f"[ResNet_CIFAR] Async prefetch chain: {len(streaming_layers)} layers linked")
 def ResNet_CIFAR_zoo(
     model_name: str = 'resnet18',
     num_classes: int = 100,
@@ -266,7 +452,8 @@ def ResNet_CIFAR_zoo(
         "input_paral_size": input_paral_size,
         "weight_paral_size": weight_paral_size,
         "input_quant_gran": input_quant_gran,
-        "weight_quant_gran": weight_quant_gran
+        "weight_quant_gran": weight_quant_gran,
+        "skip_initial_mapping": True,
     } if mem_enabled else {}
 
     if model_name not in model_params:
