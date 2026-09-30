@@ -8,6 +8,14 @@ from .triton_fast_accumulate import _round_even
 
 
 @triton.jit
+def _adc_round_even(value):
+    half = _round_even(value * 2.0) * 0.5
+    tolerance = tl.minimum(tl.maximum(tl.abs(value), 1.0) * 4.76837158203125e-7, 1e-4)
+    value = tl.where(tl.abs(value-half) <= tolerance, half, value)
+    return _round_even(value)
+
+
+@triton.jit
 def _bf16_partial_kernel(
     x_sliced,
     g0,
@@ -178,14 +186,20 @@ def _bf16_partial_kernel(
                         gain = tl.load(REFERENCE + address, mask=valid_m, other=1.0)
                         baseline = tl.load(REFERENCE + address + 1, mask=valid_m, other=0.0)
                         signal = tl.div_rn(signal - baseline * population[:, None], gain)
-                    code = _round_even(signal / adc_step)
+                    if INTEGER_ADC and not BF16_CURRENT:
+                        code = _adc_round_even(signal / adc_step)
+                    else:
+                        code = _round_even(signal / adc_step)
                     code = tl.minimum(tl.maximum(code, 0.0), highest_code)
                     if INTEGER_ADC:
                         q = code * adc_step
                     else:
                         q = code * adc_step / maximum
                 else:
-                    q = _round_even(cur / ADC_REF * RADC_SCALE) / RADC_SCALE
+                    if INTEGER_ADC and not BF16_CURRENT:
+                        q = _adc_round_even(cur / ADC_REF * RADC_SCALE) / RADC_SCALE
+                    else:
+                        q = _round_even(cur / ADC_REF * RADC_SCALE) / RADC_SCALE
                     if CLAMP_NORMALIZED:
                         q = tl.minimum(tl.maximum(q, 0.0), 1.0)
                 if TRACE:

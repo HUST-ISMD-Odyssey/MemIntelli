@@ -1,5 +1,7 @@
 # MemIntelli
 
+[中文入门指南](README.zh-CN.md) | [Runnable examples](examples/README.md)
+
 MemIntelli simulates neural-network computation on bit-sliced memristor arrays.
 It models weight quantization, conductance mapping, array currents, ADC
 conversion, device variation and digital output reconstruction.
@@ -8,6 +10,26 @@ The default is **speed mode with automatic backend selection**: try Triton on
 CUDA, then use PyTorch if Triton is unavailable or fails. A fallback emits a
 warning and is recorded in the engine status. PyTorch can also be selected
 directly, including on native Windows.
+
+## Start Here
+
+MemIntelli is an **array-behavior simulator**, not an INT6 inference accelerator.
+A6W6 means six-bit activations and six-bit weights. It does not mean the GPU
+executes a native six-bit convolution. The default bit-sliced implementation
+evaluates 6 x 6 slice pairs and their ADC conversions, so it is slower than an
+ordinary PyTorch model.
+
+Suggested first steps:
+
+1. Install the base package and run the matrix example without any dataset.
+2. Check the printed `backend_used`, `device`, `mode` and `calls` fields.
+3. Run two samples from one network example with `--limit 2`.
+4. Compare `--digital` with array simulation before adding device variation.
+5. Remove `--limit` only when the short run, dataset paths and runtime are satisfactory.
+
+The base package supports CPU matrix simulation; network examples need the
+corresponding extras listed below. Downloads are stored in the user's cache,
+not in this repository.
 
 ## Installation
 
@@ -59,6 +81,40 @@ python -m pip install -e ".[vision,speech,llm,yolo]" "triton==3.6.0"
 The supported dependency ranges are in `pyproject.toml`. Optional packages are
 grouped into `vision`, `speech`, `llm`, `yolo` and `triton` extras. Install only
 the extras needed by your examples.
+
+| What you want to run | Extra |
+|---|---|
+| Matrix multiplication | Base package: `python -m pip install -e .` |
+| MNIST, CIFAR, ImageNet, DeiT | `vision` |
+| GRU speech | `speech` |
+| YOLO VOC | `yolo` |
+| Qwen3 | `llm` |
+| Optional Linux CUDA kernels | `triton`, matched to the installed PyTorch |
+
+On Windows PowerShell you can avoid activation-policy issues by calling the
+environment's Python directly, for example
+`.\.venv\Scripts\python.exe -m pip install -e ".[yolo]"`.
+
+### First Run: No Dataset Needed
+
+From the repository root:
+
+```bash
+python examples/01_matrix_multiplication.py --backend torch --device cpu
+python examples/01_matrix_multiplication.py --backend torch --device cuda:0
+```
+
+The first command works without CUDA. Run the second only with a CUDA-enabled
+PyTorch build and an available NVIDIA GPU. On Linux with Triton installed:
+
+```bash
+python examples/01_matrix_multiplication.py --backend triton --device cuda:0
+```
+
+The JSON summary should report the backend you selected, nonzero call counts,
+and a finite error relative to FP32. **A nonzero FP32 error is expected** from
+operand quantization and ADC conversion, even with all variation set to zero.
+With `auto`, inspect the reported fallback reason rather than assuming Triton ran.
 
 ## Quick Start
 
@@ -115,6 +171,10 @@ They do not switch noise models on fallback. Invalid inputs and CUDA
 out-of-memory/device faults are not hidden by a fallback. Backend floating-point
 reduction differences can affect values near ADC thresholds; bitwise equality
 for every possible input is not promised.
+
+Increasing operand, cell or ADC precision does not remove BF16 rounding in
+`speed` mode. Use `accurate` when studying many closely spaced conductance
+states or fine ADC thresholds, and compare the two modes on the same inputs.
 
 `mode` is a numerical execution setting, not an alternative array architecture.
 The new API uses signed integer bit slicing. Historical `DPETensor` and
@@ -219,6 +279,11 @@ reconstructed_partial_sum = code * step
 
 Rounding uses round-to-nearest, ties-to-even. The current is first converted to
 partial-sum units using the configured conductance range and read voltage.
+In `accurate` mode, to prevent FP32 reduction differences from flipping a
+half-code tie, the portable backends snap values to the nearest half-integer only
+within `min(4 * float32_epsilon * max(abs(code_value), 1), 1e-4)` ADC codes.
+The same rule applies to both ADC settings. This is a numerical tie tolerance,
+not a device-noise compensation or reconstruction from an ideal answer.
 
 | Array / slice pair | ADC | Step | Highest used code | Reconstructed maximum |
 |---|---:|---:|---:|---:|
@@ -310,15 +375,106 @@ device measurements or project-specific calibration files are bundled.
 | `drift_coefficient` | `0` | Scalar or per-state drift exponent. |
 | `drift_time` | `0` | Retention time; zero disables drift. |
 | `drift_reference_time` | `1` | Positive reference time, in the same unit as retention time. |
-| `seed` | `42` | Device/read random seed. |
+| `seed` | `42` | Device/read seed, integer from 0 through `2**32-1`. |
 | `program_epoch` | `0` | Nonnegative programming-round identifier. |
 | `input_chunk_rows` | `256` | Maximum sample/token rows processed together. |
 | `output_chunk_tiles` | `8` | Maximum output-array columns processed together. |
+| `torch_fuse_adc` | `True` | Enable equivalent CUDA ADC/reconstruction optimizations in the Torch backend. |
 
 Chunk sizes control temporary memory, not physical array size or quantization
 granularity. Device samples are addressed by logical position so chunk changes
-do not select new write/read samples. Keep the engine configuration fixed after
-mapping; construct a new engine for a different device model.
+do not select new write/read samples. Keep numerical and device parameters
+fixed after mapping; software chunk sizes may be changed. Construct a new
+engine for a different device model.
+
+### Valid Configuration Checklist
+
+- Operand widths are 2-16 bits because a sign bit is included. Slice lists are
+  nonempty, start with `1`, and sum to the corresponding width.
+- Each slice is 1-8 bits. `dac_bits >= max(input_slice)` and
+  `g_level >= 2**max(weight_slice)`.
+- Array dimensions and chunk sizes are positive integers.
+- Input scale groups are `(1,Qk)` with Qk a multiple of the physical row count.
+  Weight scale groups are `(Qr,Qc)` with Qr a multiple of the physical row count;
+  Qc may be 1. Array shape and scale group are separate settings.
+- High/low conductances and voltage are positive and finite, `LGS < HGS`,
+  and their conductance step and ADC reference must fit normal FP32 arithmetic.
+- Variation and drift coefficients are nonnegative and finite. State lists have
+  exactly `g_level` entries; dictionaries cover every state once.
+- Retention time is nonnegative, reference time is positive, and programming
+  epoch is a nonnegative integer.
+- Inputs/weights are finite real dense tensors, with no empty dimension.
+  A mapped weight belongs to the engine that created it.
+
+Invalid configurations raise an error naming the parameter; they are not
+silently rounded into a different simulation. Valid configurations can still
+exceed available memory. Smaller software chunks reduce temporary memory
+without changing the array geometry.
+
+## Check Acceleration and Runtime
+
+After a forward call, `engine.describe()` tells you what actually ran:
+
+| Field | Check |
+|---|---|
+| `device` | `cuda:0` for GPU execution, not `cpu` |
+| `backend_used` | `triton` or `torch`; `auto` is only the requested policy |
+| `mode` | `speed` uses BF16 current computation; `accurate` uses FP32 |
+| `calls.triton`, `calls.torch` | Number of executed backend calls |
+| `fallback_reason` | Why automatic selection changed to Torch, if applicable |
+| `torch_adc_fusion` | `active` for fused CUDA ADC, `lookup` for an exact BF16 lookup, `not_used`, `disabled`, or `unavailable` |
+
+Native Windows uses **Torch CUDA**, not Triton, in the documented installation.
+The speed path calls BF16 batched GPU matrix multiplication. For binary slices,
+DAC1, clipped ADC and no array-reference correction, independent weight slices
+are grouped into larger GPU operations. Up to seven weight slices use PyTorch's
+Jiterator/NVRTC runtime to fuse ADC arithmetic and signed reconstruction.
+This works without Triton or a separately installed `nvcc` compiler.
+
+If runtime compilation is unavailable, a warning and `torch_adc_fusion_error`
+record the reason, and execution continues in portable Torch. Where safe, this
+uses an exact table of the ADC function over BF16 current encodings; otherwise
+it uses the ordinary arithmetic path. The lookup uses the simulated current,
+not an ideal output or test label. FP32 mode, multi-bit cells, and array-reference
+correction retain the general path. GPU memory is bounded by software chunks.
+
+For a direct unfused comparison, set `torch_fuse_adc=False` or use
+`--no-torch-fuse-adc`. This is a software optimization switch, not a different
+device model. It does not change ADC saturation, random samples, physical-array
+geometry or quantization granularity.
+
+The Triton backend uses fused activation quantization/bit slicing and a tuned
+64-row current kernel for common speed-mode shapes. Input and weight bit slices
+still receive separate ADC conversions; tuning GPU tiles never enlarges the
+physical array. Large quantization groups retain the portable input slicer.
+
+`input_chunk_rows` groups independent sample/token or unfolded image-patch rows.
+Increasing it reduces small calls but increases temporary memory.
+`output_chunk_tiles` groups output-array blocks. Neither changes `paral_size`,
+ADC width or quantization granularity. Start with a short run, try larger chunks,
+and compare outputs before a full evaluation. Do not change physical arrays
+or quantization just to report a faster runtime.
+
+The YOLO example reports first-image forward time, subsequent mean forward
+time, overall evaluation time and peak allocated GPU memory. The first image
+includes lazy weight mapping and possible Triton or Torch CUDA compilation. CUDA is
+synchronized for timing. A short-run projection is an estimate, not a measured
+full-dataset runtime or physical-chip latency.
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| `No module named triton` | Expected for Windows `auto`; use `--backend torch`. For strict Triton, use the documented Linux installation. |
+| `CUDA was requested but is unavailable` | Check `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"` in the environment running the example. |
+| CUDA out of memory | Reduce batch size, `--input-chunk-rows`, then `--output-chunk-tiles`; keep model and physical parameters unchanged. |
+| A `quant_gran` error | Check row alignment; `(64,1)` is valid for a `(64,64)` weight array, but `(32,1)` is not. |
+| State-variation length mismatch | Match the list/dictionary to `g_level`, not to the number of weight bits. |
+| Checkpoint checksum mismatch | Remove only the named corrupt cached checkpoint and rerun; do not bypass verification. |
+| Dataset not found | `--checkpoint` supplies weights, not data. Follow the directory layout in the examples README. |
+| Slow first image | Mapping or kernel compilation can be included; compare later images separately. |
+| NVRTC/ADC fusion warning | Check the matching PyTorch CUDA runtime libraries. Inference still works; `--no-torch-fuse-adc` explicitly selects the unfused path. |
+| Quantized accuracy below FP32 | Compare the digital model, no-noise simulation, then each variation condition. A6W6 is not an FP32-equivalent setting. |
 
 ## Neural Network Support
 

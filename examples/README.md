@@ -1,9 +1,17 @@
 # Examples
 
+[中文入门指南](../README.zh-CN.md) | [Complete parameter reference](../README.md)
+
 Run commands from the repository root after installing the required extras.
 All examples default to `--backend auto --mode speed --adc-clip`.
 Use `--backend torch` for native Windows, or `--backend triton` to require
 Triton without fallback.
+
+Torch CUDA enables ADC fusion by default for supported speed-mode settings.
+Use `--no-torch-fuse-adc` for an unfused comparison. Check
+`simulation.torch_adc_fusion` and `simulation.torch_adc_fusion_error` to see
+whether runtime compilation was used; its first-call cost is separate from
+steady inference. This does not require Triton on Windows.
 
 ## Order
 
@@ -26,6 +34,21 @@ Triton without fallback.
 
 The underscore-prefixed files are shared implementation helpers, not separate
 examples.
+
+## First Network Run
+
+Start with the matrix example, then one short network evaluation:
+
+```bash
+python examples/01_matrix_multiplication.py --backend torch --device cpu
+python examples/07_resnet_cifar_inference.py --backend torch --download --limit 2
+```
+
+Check `simulation.backend_used`, `simulation.device` and the backend call
+counts. Repeat the network command with `--digital` to evaluate the FP32
+software model. Remove `--limit` only after the short run works.
+The first download retrieves the whole required dataset/checkpoint, even when
+only two samples will be evaluated.
 
 ## Matrix and Quantization
 
@@ -105,6 +128,33 @@ Provide the extracted VOC2007 **test** set, including `JPEGImages`,
 `Annotations` and `ImageSets/Main/test.txt`. The example evaluates one image at
 a time at 640-by-640 by default. `--image-size` can select another multiple of
 32. `--confidence` defaults to 0.001 and `--nms-iou` to 0.6.
+`--download` does not fetch VOC, and `--batch-size` does not change this
+example's one-image-at-a-time evaluation.
+
+```text
+VOC2007/
+  JPEGImages/
+  Annotations/
+  ImageSets/Main/test.txt
+```
+
+This example defaults to `--input-chunk-rows 16384`; the general engine default
+remains 256. The larger software chunk reduces small calls in image inference
+without changing A6W6, the physical array size, or quantization groups.
+Reduce it to 4096, 1024 or 256 if GPU memory is limited.
+
+For a short timed check, then a complete run:
+
+```bash
+python examples/12_yolov3_voc_inference.py --backend torch --data-root /path/to/VOC2007 --limit 10
+python examples/12_yolov3_voc_inference.py --backend torch --data-root /path/to/VOC2007 --output voc_summary.json
+```
+
+The summary separates initial setup, the first forward call (including lazy
+mapping), subsequent mean/p50/p95 forward times and total evaluation wall time.
+GPU operations are synchronized for timing. A projection from `--limit 10`
+is not a measured full-test-set duration. The reported GPU memory is PyTorch's
+peak allocated memory, not total board usage.
 
 Both checkpoints default to this repository's release URLs. The optional YOLO
 implementation is downloaded from the pinned zjykzj/YOLOv5 revision. To run

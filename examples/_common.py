@@ -11,21 +11,36 @@ import torch
 from memintelli import SimulationEngine
 
 
+def _nonnegative_int(value):
+    result = int(value)
+    if result < 0:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer")
+    return result
+
+
+def _positive_int(value):
+    result = int(value)
+    if result < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return result
+
+
 def parser(description):
     p = argparse.ArgumentParser(description=description)
     p.add_argument("--backend", choices=("auto", "triton", "torch"), default="auto")
     p.add_argument("--mode", choices=("speed", "accurate"), default="speed")
     p.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--activation-bits", type=int, default=6)
-    p.add_argument("--weight-bits", type=int, default=6)
-    p.add_argument("--input-slice", type=int, nargs="+")
-    p.add_argument("--weight-slice", type=int, nargs="+")
-    p.add_argument("--array-size", type=int, nargs=2, default=(64, 64))
-    p.add_argument("--input-quant-gran", type=int, nargs=2)
-    p.add_argument("--weight-quant-gran", type=int, nargs=2)
-    p.add_argument("--adc-bits", type=int, default=6)
-    p.add_argument("--dac-bits", type=int, default=1)
+    p.add_argument("--activation-bits", type=int, choices=range(2, 17), default=6)
+    p.add_argument("--weight-bits", type=int, choices=range(2, 17), default=6)
+    p.add_argument("--input-slice", type=int, choices=range(1, 9), nargs="+")
+    p.add_argument("--weight-slice", type=int, choices=range(1, 9), nargs="+")
+    p.add_argument("--array-size", type=_positive_int, nargs=2, default=(64, 64))
+    p.add_argument("--input-quant-gran", type=_positive_int, nargs=2)
+    p.add_argument("--weight-quant-gran", type=_positive_int, nargs=2)
+    p.add_argument("--adc-bits", type=int, choices=range(1, 17), default=6)
+    p.add_argument("--dac-bits", type=int, choices=range(1, 17), default=1)
     p.add_argument("--adc-clip", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--torch-fuse-adc", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--write-variation", type=float, default=0.0)
     p.add_argument("--read-variation", type=float, default=0.0)
     p.add_argument("--variation-json", type=Path, help="Per-state write_variation/read_variation/drift_coefficient")
@@ -37,16 +52,16 @@ def parser(description):
     p.add_argument("--g-level", type=int, default=16)
     p.add_argument("--vread", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--program-epoch", type=int, default=0)
-    p.add_argument("--input-chunk-rows", type=int, default=256)
-    p.add_argument("--output-chunk-tiles", type=int, default=8)
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--limit", type=int, default=0, help="Limit evaluated samples; 0 means the complete split")
+    p.add_argument("--program-epoch", type=_nonnegative_int, default=0)
+    p.add_argument("--input-chunk-rows", type=_positive_int, default=256)
+    p.add_argument("--output-chunk-tiles", type=_positive_int, default=8)
+    p.add_argument("--batch-size", type=_positive_int, default=8)
+    p.add_argument("--limit", type=_nonnegative_int, default=0, help="Limit evaluated samples; 0 means the complete split")
     p.add_argument("--data-root", type=Path, default=Path("data"))
     p.add_argument("--checkpoint", type=Path)
     p.add_argument("--download", action="store_true")
     p.add_argument("--digital", action="store_true", help="Evaluate the floating-point software model instead")
-    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--workers", type=_nonnegative_int, default=0)
     p.add_argument("--output", type=Path, help="Optional JSON summary; no output files are written by default")
     return p
 
@@ -71,7 +86,7 @@ def engine(args):
         drift_time=args.drift_time, drift_reference_time=args.drift_reference_time,
         HGS=args.hgs, LGS=args.lgs, g_level=args.g_level, vread=args.vread,
         seed=args.seed, program_epoch=args.program_epoch, input_chunk_rows=args.input_chunk_rows,
-        output_chunk_tiles=args.output_chunk_tiles,
+        output_chunk_tiles=args.output_chunk_tiles, torch_fuse_adc=args.torch_fuse_adc,
     )
 
 
