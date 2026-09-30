@@ -178,6 +178,9 @@ Torch 后端默认启用 `torch_fuse_adc=True`。对常用的一位切片、DAC1
 `adc_clip=True`、ADC不超过8位、无阵列参考校正的配置，会合并输入和权重位片的矩阵乘法，
 并把各位片的ADC、带符号累加和输出缩放合成一个CUDA内核。
 输入量化、位切片和电压数据转换也使用融合内核，减少中间数据读写。
+带噪声时，器件地址、随机数、分电导态的写入误差和读噪声、漂移乘法及电导转换
+也使用融合内核。同一次逻辑读取中的输入分块可以复用电导；下一次读取重新生成
+读噪声，不跨GRU时间步复用。写入误差仍按器件位置和编程轮次固定。
 程序检查FP32整数累加范围，超出该范围则保留通用路径。
 Windows 不需要安装 Triton，也不需要单独安装 `nvcc`。
 
@@ -197,16 +200,33 @@ Windows 不需要安装 Triton，也不需要单独安装 `nvcc`。
 Triton 后端则融合输入量化、位切片，并对常用64行配置调整GPU计算块。
 这些优化都保留每个位片、每个物理阵列的ADC，不改变噪声或量化粒度。
 
-`input_chunk_rows` 和 `output_chunk_tiles` 只控制软件一次处理多少数据：
+默认使用 `chunk_policy="auto"`、`workspace_mb=512`，即512 MiB临时工作区预算。
+程序根据当前层的输入数量、权重形状和位片数，联合选择输入分块和权重输出方向分块。
+这是一套按形状估算的调度策略，不做训练、不使用标签，也不执行测速搜索；
+不能保证在每张显卡上都是最快配置。
 
 ```powershell
-.\.venv\Scripts\python.exe examples/12_yolov3_voc_inference.py --backend torch --data-root D:\data\VOCdevkit\VOC2007 --limit 10 --input-chunk-rows 4096
+.\.venv\Scripts\python.exe examples/12_yolov3_voc_inference.py --backend torch --data-root D:\data\VOCdevkit\VOC2007 --limit 10 --workspace-mb 512
 ```
 
-增大软件分块通常能减少小规模调用，但会增加临时显存。
-YOLO 示例默认使用 `16384`；通用引擎默认仍为 `256`。
-它不改变 64×64 物理阵列、A6W6 位宽或量化尺度。
-显存不足时减小软件分块，不要直接改动物理阵列来掩盖显存问题。
+预算包括电导、电压和中间电流等临时数据，预留四分之一用于同一次读取的电导复用。
+它不是GPU总显存上限，不包含模型、映射索引、卷积展开、KV缓存、首次映射等占用。
+预算过小可能产生大量小调用；预算增大也不一定更快。显存紧张时先减小批量和
+`--workspace-mb`，不要直接改动物理阵列。最小计算块仍可能超出很小的预算，
+实际选定的分块及估计占用可在 `engine.describe()["chunk_plans"]` 中查看。
+
+自动调度用于满足融合条件的Torch CUDA一位切片、截断ADC、speed路径。
+Triton、CPU、accurate模式、多位切片、阵列参考校正及融合不可用时使用手动分块。
+若需要明确控制分块，设置 `chunk_policy="manual"`，或：
+
+```powershell
+.\.venv\Scripts\python.exe examples/12_yolov3_voc_inference.py --backend torch --data-root D:\data\VOCdevkit\VOC2007 --limit 10 --chunk-policy manual --input-chunk-rows 4096 --output-chunk-tiles 8
+```
+
+`input_chunk_rows` 是一次处理的样本、词元或卷积展开输入行数；
+`output_chunk_tiles` 是一次处理的权重阵列列块数。手动模式下，YOLO默认输入上限
+为16384，通用引擎为256。两者都不改变64×64物理阵列、A6W6、量化粒度或噪声地址。
+分块变化可能改变浮点求和顺序，产生末位误差；严格复现时固定手动分块并比较输出。
 
 第一次推理可能包含权重映射、Triton 或 Torch CUDA 内核编译，应与后续图片分开计时。
 程序报告的 GPU 仿真耗时不是芯片延迟。用少量图片推算完整测试集时长，

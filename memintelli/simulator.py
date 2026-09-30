@@ -112,12 +112,17 @@ class SimulationEngine(DPETensorMultiMode):
         write_variation=0.0, read_variation=0.0,
         drift_coefficient=0.0, drift_time=0.0, drift_reference_time=1.0,
         seed=42, program_epoch=0, output_chunk_tiles=8, input_chunk_rows=256,
-        torch_fuse_adc=True,
+        torch_fuse_adc=True, chunk_policy="auto", workspace_mb=512,
     ):
         if backend not in ("auto", "triton", "torch"):
             raise ValueError("backend must be auto, triton or torch")
         if mode not in ("speed", "accurate"):
             raise ValueError("mode must be speed or accurate")
+        if chunk_policy not in ("auto", "manual"):
+            raise ValueError("chunk_policy must be auto or manual")
+        workspace_mb = _real(workspace_mb, "workspace_mb", positive=True)
+        if not 1 <= workspace_mb <= (2**63-1)//1024**2:
+            raise ValueError("workspace_mb must be at least 1 MiB and fit a signed 64-bit byte count")
         device = torch.device(device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
         if device.type not in ("cpu", "cuda"):
             raise ValueError("Supported devices are CPU and CUDA")
@@ -187,8 +192,13 @@ class SimulationEngine(DPETensorMultiMode):
         self._torch_fusion_error = None
         self._torch_cuda_fusion_status = "not_used" if torch_fuse_adc else "disabled"
         self._torch_cuda_fusion_error = None
+        self._torch_packed_reads = 0
         self.seed, self.program_epoch = int(seed), int(program_epoch)
         self.output_chunk_tiles, self.input_chunk_rows = int(output_chunk_tiles), int(input_chunk_rows)
+        self.chunk_policy, self.workspace_mb = chunk_policy, workspace_mb
+        self._workspace_bytes = int(workspace_mb*1024**2)
+        self._chunk_plans = {}
+        self._conductance_reuses = 0
         self.write_sigmas = _levels(write_variation, g_level, "write_variation", device)
         self.read_sigmas = _levels(read_variation, g_level, "read_variation", device)
         self.drift_exponents = _levels(drift_coefficient, g_level, "drift_coefficient", device)
@@ -215,7 +225,9 @@ class SimulationEngine(DPETensorMultiMode):
                                         dtype=torch.int32)[None, None, :, None]
         indices = torch.arange(g_level, device=device, dtype=torch.float32)
         nominal = self._round_internal(self._round_internal(indices*self.Q_G) + self.LGS)
+        self._nominal_conductance = nominal
         self._nominal_shifted = self._round_internal(nominal-self.LGS)
+        self._nominal_shifted_bf16 = self._nominal_shifted.to(torch.bfloat16)
         weight_meta = SlicedDataMultiMode(torch.tensor(self.weight_slice), device=device)
         self._slice_scales = (self._input_template.sliced_weights[:, None]
                               * weight_meta.sliced_weights[None, :])
@@ -336,6 +348,49 @@ class SimulationEngine(DPETensorMultiMode):
         x.max_data = maxima.repeat_interleave(group//size, dim=1)[:, :blocks, :, None]
         return x
 
+    def _restore_for_torch(self, mat, start, end, *, read_epoch):
+        torch_selected = self.backend_requested == "torch" or self._fallback_reason is not None
+        if (torch_selected and self.torch_fuse_adc and self.device.type == "cuda"
+                and self.execution_mode == "speed"
+                and mat.G_indices.is_contiguous()
+                and mat.logical_index_shape[0] <= 65535
+                and math.prod(mat.logical_index_shape[2:])*(end-start) <= 2**31-256):
+            from .portable_cuda import get_kernel
+            noisy = self._write_active or self._read_active or self._drift_active
+            kernel = get_kernel(self, "noisy_conductance" if noisy else "conductance")
+            if kernel is not None:
+                m, p, s, k, l = mat.logical_index_shape
+                packed = torch.empty((m, k, s, end-start, l),
+                                     device=self.device, dtype=torch.bfloat16)
+                with torch.cuda.device(self.device):
+                    if noisy:
+                        drift = self._drift_factors()
+                        layer_key = self.seed + mat.simulation_layer_id * 1000003
+                        args = [mat.G_indices, self._nominal_conductance, self.write_sigmas,
+                                self.read_sigmas, drift, packed, end-start, p, start,
+                                (layer_key + mat.program_epoch * 31337) & 0xffffffff,
+                                (layer_key + 0x13579bdf + read_epoch * 104729) & 0xffffffff,
+                                int(self._write_active), int(self._read_active), int(self._drift_active)]
+                    else:
+                        args = [mat.G_indices, self._nominal_shifted_bf16, packed, m, end-start, p, start]
+                    kernel(grid=((k*s*(end-start)*l+255)//256, m, 1), block=(256, 1, 1), args=args)
+                self._torch_packed_reads += 1
+                self._torch_cuda_fusion_status = "active"
+                # Preserve the array-facing shape while exposing a ready-to-use BMM layout.
+                return packed.permute(0, 3, 2, 1, 4)
+        return self.restore(mat, start, end, read_epoch=read_epoch)
+
+    def _drift_factors(self):
+        ratio = max(self.retention_time / self.retention_reference, 1.0)
+        if self.drift_exponents.is_inference():
+            return torch.pow(ratio, -self.drift_exponents)
+        key = (self.retention_time, self.retention_reference,
+               id(self.drift_exponents), self.drift_exponents._version)
+        if getattr(self, "_drift_table_key", None) != key:
+            self._drift_table = torch.pow(ratio, -self.drift_exponents)
+            self._drift_table_key = key
+        return self._drift_table
+
     def _accumulate(self, x, g, mat_max, mat, reference, valid_columns):
         from .portable_torch import accumulate
         if self.backend_requested != "torch" and self._fallback_reason is None:
@@ -355,7 +410,7 @@ class SimulationEngine(DPETensorMultiMode):
         self.backend_used = "torch"
         return result
 
-    def MapReduceDot(self, x, mat):
+    def MapReduceDot(self, x, mat, *, _output_tiles=None, _read_cache=None):
         if getattr(mat, "_mapping_token", None) is not self._mapping_token:
             raise ValueError("Map the weight with this SimulationEngine before using it")
         if len(x.shape) != 2 or len(mat.shape) != 2 or x.shape[1] != mat.shape[0]:
@@ -373,9 +428,19 @@ class SimulationEngine(DPETensorMultiMode):
         epoch = self.layer_calls.get(lid, 0)
         self.layer_calls[lid] = epoch + 1
         parts = []
-        for start in range(0, mat.G_indices.shape[1], self.output_chunk_tiles):
-            end = min(start + self.output_chunk_tiles, mat.G_indices.shape[1])
-            g = self.restore(mat, start, end, read_epoch=epoch)
+        output_tiles = self.output_chunk_tiles if _output_tiles is None else _output_tiles
+        for start in range(0, mat.G_indices.shape[1], output_tiles):
+            end = min(start + output_tiles, mat.G_indices.shape[1])
+            key = (start, end)
+            if _read_cache is not None and key in _read_cache["values"]:
+                g = _read_cache["values"][key]
+                self._conductance_reuses += 1
+            else:
+                g = self._restore_for_torch(mat, start, end, read_epoch=epoch)
+                size = g.numel()*g.element_size()
+                if _read_cache is not None and size <= _read_cache["remaining_bytes"]:
+                    _read_cache["values"][key] = g
+                    _read_cache["remaining_bytes"] -= size
             ref = getattr(mat, "adc_reference", None)
             if ref is not None:
                 if (not self.adc_clip or max(self.input_slice + self.weight_slice) != 1
@@ -418,12 +483,56 @@ class SimulationEngine(DPETensorMultiMode):
             raise ValueError("Input contains nonfinite values")
         lid = mapped_weight.simulation_layer_id
         epoch = self.layer_calls.get(lid, 0)
+        plan = self._execution_plan(len(flat), mapped_weight)
+        input_rows, output_tiles = plan["input_rows"], plan["output_tiles"]
+        # This cache dies at the end of one logical read, including every GRU step.
+        # Its entire size is reserved separately from the current workspace.
+        packed_bytes = mapped_weight.G_indices.numel()*2
+        cache = {"values": {}, "remaining_bytes": self._workspace_bytes//4} if (
+                       len(flat) > input_rows and self.device.type == "cuda"
+                       and self.execution_mode == "speed" and self.torch_fuse_adc
+                       and (self.backend_requested == "torch" or self._fallback_reason is not None)
+                       and packed_bytes <= self._workspace_bytes//4) else None
         result = []
-        for start in range(0, len(flat), self.input_chunk_rows):
-            x = self._slice_input(flat[start:start+self.input_chunk_rows])
+        if "budget_bytes" in plan:
+            chunks = math.ceil(len(flat)/input_rows)
+            ranges = ((i*len(flat)//chunks, (i+1)*len(flat)//chunks) for i in range(chunks))
+        else:
+            ranges = ((i, min(i+input_rows, len(flat))) for i in range(0, len(flat), input_rows))
+        for start, end in ranges:
+            x = self._slice_input(flat[start:end])
             self.layer_calls[lid] = epoch
-            result.append(self.MapReduceDot(x, mapped_weight))
+            result.append(self.MapReduceDot(x, mapped_weight, _output_tiles=output_tiles,
+                                           _read_cache=cache))
         return torch.cat(result).reshape(*shape[:-1], mapped_weight.shape[1])
+
+    def _execution_plan(self, samples, mat):
+        # Auto scheduling currently models the fused binary Torch path. Other
+        # backends/precisions retain the explicitly requested software chunks.
+        eligible = (self.device.type == "cuda" and self.execution_mode == "speed"
+                    and self.torch_fuse_adc and self.adc_clip and self.dac_bits == 1
+                    and self.adc_bits <= 8 and max(self.input_slice + self.weight_slice) == 1
+                    and (2**self.adc_bits-1)*(2**self.activation_bits-1)
+                    *(2**self.weight_bits-1) <= 2**24
+                    and getattr(mat, "adc_reference", None) is None
+                    and self._torch_cuda_fusion_error is None
+                    and (self.backend_requested == "torch" or self._fallback_reason is not None))
+        if self.chunk_policy != "auto" or not eligible:
+            return {"input_rows": self.input_chunk_rows, "output_tiles": self.output_chunk_tiles}
+        key = (samples, mat.logical_index_shape, self._workspace_bytes)
+        if key not in self._chunk_plans:
+            from .scheduling import plan_chunks
+            self._chunk_plans[key] = dict(
+                plan_chunks(samples, mat.logical_index_shape,
+                            len(self.input_slice), self._workspace_bytes*3//4),
+                samples=samples, logical_index_shape=mat.logical_index_shape)
+        return self._chunk_plans[key]
+
+    def current_chunk_rows(self, n, blocks, input_slices, weight_slices, columns):
+        # Reserve a quarter for per-read conductance reuse; current memory is
+        # independent of the physical array size and can be configured explicitly.
+        bytes_per_row = 2*blocks*input_slices*weight_slices*columns
+        return max(1, min(n, (self._workspace_bytes*3//4)//max(1, bytes_per_row)))
 
     def describe(self):
         return {
@@ -442,10 +551,14 @@ class SimulationEngine(DPETensorMultiMode):
             "drift_time": self.retention_time, "drift_reference_time": self.retention_reference,
             "seed": self.seed, "program_epoch": self.program_epoch,
             "output_chunk_tiles": self.output_chunk_tiles, "input_chunk_rows": self.input_chunk_rows,
+            "chunk_policy": self.chunk_policy, "workspace_mb": self.workspace_mb,
+            "chunk_plans": list(self._chunk_plans.values()),
+            "conductance_reuses": self._conductance_reuses,
             "torch_fuse_adc": self.torch_fuse_adc,
             "torch_adc_fusion": self._torch_fusion_status,
             "torch_adc_fusion_error": self._torch_fusion_error,
             "torch_cuda_fusion": self._torch_cuda_fusion_status,
             "torch_cuda_fusion_error": self._torch_cuda_fusion_error,
+            "torch_packed_conductance_calls": self._torch_packed_reads,
             "calls": dict(self.execution_counts),
         }

@@ -55,6 +55,9 @@ def parser(description):
     p.add_argument("--program-epoch", type=_nonnegative_int, default=0)
     p.add_argument("--input-chunk-rows", type=_positive_int, default=256)
     p.add_argument("--output-chunk-tiles", type=_positive_int, default=8)
+    p.add_argument("--chunk-policy", choices=("auto", "manual"), default="auto")
+    p.add_argument("--workspace-mb", type=_positive_int, default=512,
+                   help="Temporary-workspace budget in MiB; excludes model storage")
     p.add_argument("--batch-size", type=_positive_int, default=8)
     p.add_argument("--limit", type=_nonnegative_int, default=0, help="Limit evaluated samples; 0 means the complete split")
     p.add_argument("--data-root", type=Path, default=Path("data"))
@@ -87,6 +90,7 @@ def engine(args):
         HGS=args.hgs, LGS=args.lgs, g_level=args.g_level, vread=args.vread,
         seed=args.seed, program_epoch=args.program_epoch, input_chunk_rows=args.input_chunk_rows,
         output_chunk_tiles=args.output_chunk_tiles, torch_fuse_adc=args.torch_fuse_adc,
+        chunk_policy=args.chunk_policy, workspace_mb=args.workspace_mb,
     )
 
 

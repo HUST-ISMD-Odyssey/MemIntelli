@@ -77,7 +77,7 @@ def _binary_accumulate(x, conductance, mat_max, mat, engine, valid_columns):
     _, xsign = _slice_factors(engine.input_slice)
     _, wsign = _slice_factors(engine.weight_slice)
     # Bound the expanded slice-current workspace independently of array geometry.
-    row_chunk = max(1, min(n, 16_777_216//(m*ns*columns)))
+    row_chunk = engine.current_chunk_rows(n, m, 1, ns, columns)
     old_reduce = torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
     try:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
@@ -179,19 +179,26 @@ def _binary_grouped_accumulate(x, conductance, mat_max, mat, engine, valid_colum
     partial = torch.empty((m, n, columns), device=xs.device, dtype=torch.float32)
     xm = x.max_data.reshape(n, m).float().contiguous()
     mm = mat_max.expand(m, p, 1, l).reshape(m, p*l)[:, :columns].float().contiguous()
-    # Keep the materialized BF16 slice currents near 32 MiB to limit memory traffic.
-    row_chunk = max(1, min(n, 16_777_216//(m*ni*ns*columns)))
+    row_chunk = engine.current_chunk_rows(n, m, ni, ns, columns)
     old_reduce = torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
     try:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
         for begin in range(0, n, row_chunk):
             end = min(begin+row_chunk, n)
-            v = torch.empty((m, ni*(end-begin), k), device=xs.device, dtype=torch.bfloat16)
-            with torch.cuda.device(xs.device):
-                voltage(grid=((v.numel()+255)//256, 1, 1), block=(256, 1, 1),
-                        args=[xs, v, m, end-begin, begin, xs.stride(0), xs.stride(1),
-                              xs.stride(2), xs.stride(4)])
-            currents = torch.bmm(v, g).reshape(m, ni, end-begin, ns, columns)
+            v = getattr(x, "_torch_full_voltage", None) if row_chunk == n else None
+            if v is None:
+                v = torch.empty((m, ni*(end-begin), k), device=xs.device, dtype=torch.bfloat16)
+                with torch.cuda.device(xs.device):
+                    voltage(grid=((v.numel()+255)//256, 1, 1), block=(256, 1, 1),
+                            args=[xs, v, m, end-begin, begin, xs.stride(0), xs.stride(1),
+                                  xs.stride(2), xs.stride(4)])
+                if row_chunk == n:
+                    # This sliced-input object lives for one read, across its output blocks.
+                    x._torch_full_voltage = v
+            if engine.chunk_policy == "auto" and end-begin == 1 and columns > 8*l:
+                currents = _single_row_currents(v, g, m, ni, k, ns, columns, 8*l)
+            else:
+                currents = torch.bmm(v, g).reshape(m, ni, end-begin, ns, columns)
             with torch.cuda.device(xs.device):
                 fused(grid=((m*(end-begin)*columns+255)//256, 1, 1), block=(256, 1, 1),
                       args=[currents, xm, mm, partial, m, end-begin, n, columns, begin])
@@ -200,6 +207,24 @@ def _binary_grouped_accumulate(x, conductance, mat_max, mat, engine, valid_colum
         return partial.sum(0)
     finally:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = old_reduce
+
+
+def _single_row_currents(v, g, m, ni, k, ns, columns, tile_columns):
+    # Very wide GEMV selects a different cuBLAS accumulation path. Batch narrow
+    # output groups instead, preserving the established eight-array GEMM shape.
+    groups, tail = divmod(columns, tile_columns)
+    full = groups*tile_columns
+    expanded_v = v[:, None].expand(m, groups, ni, k).reshape(m*groups, ni, k).contiguous()
+    gm = g.reshape(m, k, ns, columns)
+    grouped_g = gm[..., :full].reshape(m, k, ns, groups, tile_columns)
+    grouped_g = grouped_g.permute(0, 3, 1, 2, 4).reshape(m*groups, k, ns*tile_columns).contiguous()
+    current = torch.bmm(expanded_v, grouped_g).reshape(m, groups, ni, ns, tile_columns)
+    current = current.permute(0, 2, 3, 1, 4).reshape(m, ni, ns, full)
+    if tail:
+        last_g = gm[..., full:].reshape(m, k, ns*tail).contiguous()
+        last = torch.bmm(v, last_g).reshape(m, ni, ns, tail)
+        current = torch.cat((current, last), dim=-1)
+    return current.reshape(m, ni, 1, ns, columns).contiguous()
 
 
 def _binary_lookup_accumulate(x, conductance, mat_max, mat, engine, valid_columns):
@@ -223,7 +248,7 @@ def _binary_lookup_accumulate(x, conductance, mat_max, mat, engine, valid_column
     partial = torch.empty((m, n, columns), device=xs.device, dtype=torch.float32)
     if engine._torch_fusion_status != "unavailable":
         engine._torch_fusion_status = "lookup"
-    row_chunk = max(1, min(n, 16_777_216//(m*ni*ns*columns)))
+    row_chunk = engine.current_chunk_rows(n, m, ni, ns, columns)
     old_reduce = torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
     try:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False

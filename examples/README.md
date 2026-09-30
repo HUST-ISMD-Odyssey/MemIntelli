@@ -142,10 +142,11 @@ VOC2007/
   ImageSets/Main/test.txt
 ```
 
-This example defaults to `--input-chunk-rows 16384`; the general engine default
-remains 256. The larger software chunk reduces small calls in image inference
-without changing A6W6, the physical array size, or quantization groups.
-Reduce it to 4096, 1024 or 256 if GPU memory is limited.
+Eligible Torch CUDA inference uses `--chunk-policy auto --workspace-mb 512`
+to select input and weight chunks jointly. The YOLO manual/fallback input limit
+is 16384, compared with 256 in the general engine. To control it explicitly, use
+`--chunk-policy manual --input-chunk-rows 4096 --output-chunk-tiles 8`.
+Neither policy changes A6W6, physical arrays, quantization groups or noise samples.
 
 For a short timed check, then a complete run:
 
@@ -179,8 +180,10 @@ python examples/14_qwen3_inference.py --model /path/to/Qwen3-0.6B --local-files-
 
 The default is Qwen3-0.6B, not a larger model. Linear weights are mapped;
 embeddings and dynamic attention operations remain digital. The example uses
-greedy decoding with thinking disabled. Reduce `--input-chunk-rows` or
-`--output-chunk-tiles` if temporary GPU memory is limited.
+greedy decoding with thinking disabled. Reduce `--workspace-mb` if temporary GPU
+memory is limited; manual mode also accepts `--input-chunk-rows` and
+`--output-chunk-tiles`. Model loading and initial weight mapping have separate
+memory requirements.
 
 ## Shared Options
 
@@ -195,6 +198,7 @@ Every example exposes `--help`. Important common arguments are:
 - `--drift-coefficient`, `--drift-time`, `--drift-reference-time`.
 - `--seed`, `--program-epoch`.
 - `--input-chunk-rows`, `--output-chunk-tiles`.
+- `--chunk-policy auto|manual`, `--workspace-mb` (MiB; default 512).
 - `--data-root`, `--checkpoint`, `--batch-size`, `--workers`.
 - `--limit N` for a shorter dataset evaluation; zero means the complete split.
 - `--digital` for floating-point model evaluation without array simulation.

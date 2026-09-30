@@ -377,14 +377,16 @@ device measurements or project-specific calibration files are bundled.
 | `drift_reference_time` | `1` | Positive reference time, in the same unit as retention time. |
 | `seed` | `42` | Device/read seed, integer from 0 through `2**32-1`. |
 | `program_epoch` | `0` | Nonnegative programming-round identifier. |
-| `input_chunk_rows` | `256` | Maximum sample/token rows processed together. |
-| `output_chunk_tiles` | `8` | Maximum output-array columns processed together. |
+| `chunk_policy` | `"auto"` | Joint input/weight software tiling on the eligible Torch CUDA path; `"manual"` uses the two limits below. |
+| `workspace_mb` | `512` | Temporary-workspace budget in MiB, not a cap on total GPU memory. |
+| `input_chunk_rows` | `256` | Maximum sample/token rows processed together in manual mode or an unsupported auto path. |
+| `output_chunk_tiles` | `8` | Maximum output-array column blocks processed together in manual mode or an unsupported auto path. |
 | `torch_fuse_adc` | `True` | Enable equivalent CUDA ADC/reconstruction optimizations in the Torch backend. |
 
 Chunk sizes control temporary memory, not physical array size or quantization
 granularity. Device samples are addressed by logical position so chunk changes
 do not select new write/read samples. Keep numerical and device parameters
-fixed after mapping; software chunk sizes may be changed. Construct a new
+fixed after mapping; manual software chunk sizes may be changed. Construct a new
 engine for a different device model.
 
 ### Valid Configuration Checklist
@@ -394,6 +396,7 @@ engine for a different device model.
 - Each slice is 1-8 bits. `dac_bits >= max(input_slice)` and
   `g_level >= 2**max(weight_slice)`.
 - Array dimensions and chunk sizes are positive integers.
+- Workspace is finite and at least 1 MiB; the chunk policy is `auto` or `manual`.
 - Input scale groups are `(1,Qk)` with Qk a multiple of the physical row count.
   Weight scale groups are `(Qr,Qc)` with Qr a multiple of the physical row count;
   Qc may be 1. Array shape and scale group are separate settings.
@@ -423,6 +426,8 @@ After a forward call, `engine.describe()` tells you what actually ran:
 | `calls.triton`, `calls.torch` | Number of executed backend calls |
 | `fallback_reason` | Why automatic selection changed to Torch, if applicable |
 | `torch_adc_fusion` | `active` for fused CUDA ADC, `lookup` for an exact BF16 lookup, `not_used`, `disabled`, or `unavailable` |
+| `chunk_plans` | Effective input rows, output-array groups and estimated temporary bytes for each automatically scheduled shape. |
+| `torch_packed_conductance_calls`, `conductance_reuses` | Fused weight restorations and reuse within a logical read. |
 
 Native Windows uses **Torch CUDA**, not Triton, in the documented installation.
 The speed path calls BF16 batched GPU matrix multiplication. Optional PyTorch
@@ -432,7 +437,16 @@ correction, input and weight slices are grouped into larger GPU operations.
 One kernel performs every per-slice ADC, signed accumulation and output scaling,
 then PyTorch sums the array-row blocks. This path is used only within a checked
 FP32 exact-integer accumulation bound; other cases retain the general path.
-Intermediate BF16 current chunks target 32 MiB to limit memory traffic.
+The temporary workspace is configurable rather than fixed at 32 MiB.
+
+Speed-mode Torch CUDA also fuses logical device addressing, state-dependent
+write/read noise, drift multiplication and BF16 conductance packing. It retains
+the original hash, normal samples and operation order. Small drift tables are
+reused; read-noise realizations are never cached across logical reads or GRU
+time steps. When budget permits, restored weights are reused across the input
+chunks of the same read. Single-row inference batches narrow output groups
+instead of using one very wide GEMM, avoiding the different current-rounding
+path observed for large vocabulary projections.
 
 The optional grouped kernels use PyTorch's internal CUDA compilation API, checked
 at runtime. `torch_cuda_fusion` reports `active`, `not_used`, `disabled` or
@@ -461,12 +475,43 @@ The Triton backend uses fused activation quantization/bit slicing and a tuned
 still receive separate ADC conversions; tuning GPU tiles never enlarges the
 physical array. Large quantization groups retain the portable input slicer.
 
-`input_chunk_rows` groups independent sample/token or unfolded image-patch rows.
-Increasing it reduces small calls but increases temporary memory.
-`output_chunk_tiles` groups output-array blocks. Neither changes `paral_size`,
-ADC width or quantization granularity. Start with a short run, try larger chunks,
-and compare outputs before a full evaluation. Do not change physical arrays
-or quantization just to report a faster runtime.
+### Input and Weight Scheduling
+
+`chunk_policy="auto"` selects input rows and weight output-column groups jointly,
+using the layer shape, actual bit-slice counts and `workspace_mb`. It estimates
+packed weights, input slices, voltages, partial outputs and materialized currents,
+then minimizes the estimated number of dispatches. Tail input chunks are balanced.
+No training samples, labels or runtime search are used. This is a shape-based
+heuristic, not a guarantee of the fastest possible configuration.
+
+The default 512 MiB is a configurable working budget. A quarter is reserved for
+optional within-read conductance reuse. It does not include model weights,
+mapped indices, convolution unfolding, KV cache, lazy mapping, library workspaces
+or the allocator cache, and is not a hard total-memory limit. A minimum compute
+block may itself exceed a very small budget; `chunk_plans` reports that case.
+Increasing the budget can reduce launches and repeated restoration, but does not
+necessarily improve throughput. If memory is limited, reduce `--workspace-mb`.
+
+Automatic scheduling currently covers eligible binary-sliced, clipped-ADC
+Torch CUDA speed-mode inference. Triton, CPU, accurate mode, multi-bit slices,
+array-reference correction and unavailable grouped CUDA fusion retain manual
+chunk limits. Neither policy changes physical `paral_size`, ADC width, quantization
+granularity or the logical addresses used for noise.
+
+For explicitly controlled chunks, use:
+
+```python
+engine = SimulationEngine(
+    backend="torch", chunk_policy="manual",
+    input_chunk_rows=256, output_chunk_tiles=8, workspace_mb=512,
+)
+```
+
+`input_chunk_rows` groups sample/token or unfolded image-patch rows;
+`output_chunk_tiles` groups weight-array columns. The original array-row
+partition and its ADCs are retained. Floating-point reduction order can vary
+with batching, producing small final-output roundoff. Use identical manual
+chunks for strict repeatability comparisons and verify outputs before a full run.
 
 The YOLO example reports first-image forward time, subsequent mean forward
 time, overall evaluation time and peak allocated GPU memory. The first image
@@ -480,7 +525,7 @@ full-dataset runtime or physical-chip latency.
 |---|---|
 | `No module named triton` | Expected for Windows `auto`; use `--backend torch`. For strict Triton, use the documented Linux installation. |
 | `CUDA was requested but is unavailable` | Check `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"` in the environment running the example. |
-| CUDA out of memory | Reduce batch size, `--input-chunk-rows`, then `--output-chunk-tiles`; keep model and physical parameters unchanged. |
+| CUDA out of memory | Reduce batch size and `--workspace-mb`; in manual mode also reduce `--input-chunk-rows` / `--output-chunk-tiles`. Lazy mapping has a separate memory peak. |
 | A `quant_gran` error | Check row alignment; `(64,1)` is valid for a `(64,64)` weight array, but `(32,1)` is not. |
 | State-variation length mismatch | Match the list/dictionary to `g_level`, not to the number of weight bits. |
 | Checkpoint checksum mismatch | Remove only the named corrupt cached checkpoint and rerun; do not bypass verification. |

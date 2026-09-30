@@ -19,7 +19,8 @@ def get_kernel(engine, name):
     if hasattr(engine, attribute):
         return getattr(engine, attribute)
     builder = {"adc_reduce": compile_adc_reduce, "voltage": compile_voltage,
-               "slice": compile_slice}[name]
+               "slice": compile_slice, "conductance": compile_conductance,
+               "noisy_conductance": compile_noisy_conductance}[name]
     try:
         kernel = builder(engine)
     except (AttributeError, ImportError, OSError, RuntimeError, TypeError) as exc:
@@ -131,3 +132,70 @@ extern "C" __global__ void memintelli_slice(
 }}
 '''
     return _compile(source, "memintelli_slice", str(engine.device))
+
+
+def compile_conductance(engine):
+    k, l = engine.weight_paral_size
+    ns = len(engine.weight_slice)
+    source = f'''
+extern "C" __global__ void memintelli_conductance(
+    const unsigned char* indices, const unsigned short* nominal, unsigned short* packed,
+    int blocks, int columns, int source_columns, int start) {{
+    int index = blockIdx.x*blockDim.x+threadIdx.x;
+    int block = blockIdx.y;
+    if (index >= {k}*{ns}*columns*{l}) return;
+    int col = index % {l};
+    int tile = (index/{l}) % columns;
+    int slice = (index/({l}*columns)) % {ns};
+    int row = index/({l}*columns*{ns});
+    long long source = ((((long long)block*source_columns+start+tile)*{ns}+slice)*{k}+row)*{l}+col;
+    packed[(long long)block*{k}*{ns}*columns*{l}+index] = nominal[indices[source]];
+}}
+'''
+    return _compile(source, "memintelli_conductance", str(engine.device))
+
+
+def compile_noisy_conductance(engine):
+    k, l = engine.weight_paral_size
+    ns = len(engine.weight_slice)
+    source = f'''
+__device__ unsigned int device_hash(unsigned int x) {{
+    x = (x ^ (x >> 16)) * 0x7feb352du;
+    x = (x ^ (x >> 15)) * 0x846ca68bu;
+    return x ^ (x >> 16);
+}}
+__device__ float device_normal(unsigned int address, unsigned int seed) {{
+    unsigned int first = device_hash(address ^ seed);
+    unsigned int second = device_hash(first ^ 0xa511e9b3u);
+    float u = (float(first >> 8) + 0.5f) * (1.0f/16777216.0f);
+    float v = (float(second >> 8) + 0.5f) * (1.0f/16777216.0f);
+    return sqrtf(-2.0f*logf(u))*cosf({float(torch.tensor(2*math.pi))}f*v);
+}}
+__device__ unsigned short bf16_bits(float x) {{
+    unsigned int bits = __float_as_uint(x);
+    if ((bits & 0x7fffffffu) > 0x7f800000u) return 0x7fc0;
+    return (bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16;
+}}
+extern "C" __global__ void memintelli_noisy_conductance(
+    const unsigned char* indices, const float* nominal, const float* write_sigma,
+    const float* read_sigma, const float* drift, unsigned short* packed,
+    int columns, int source_columns, int start, unsigned int write_seed,
+    unsigned int read_seed, int write_active, int read_active, int drift_active) {{
+    int index = blockIdx.x*blockDim.x+threadIdx.x;
+    int block = blockIdx.y;
+    if (index >= {k}*{ns}*columns*{l}) return;
+    int col = index % {l};
+    int tile = (index/{l}) % columns;
+    int slice = (index/({l}*columns)) % {ns};
+    int row = index/({l}*columns*{ns});
+    long long source = ((((long long)block*source_columns+start+tile)*{ns}+slice)*{k}+row)*{l}+col;
+    unsigned int state = indices[source];
+    float g = nominal[state];
+    if (write_active) g = g*expf(device_normal((unsigned int)source, write_seed)*write_sigma[state]);
+    if (drift_active) g = g*drift[state];
+    if (read_active) g = g*expf(device_normal((unsigned int)source, read_seed)*read_sigma[state]);
+    g = __uint_as_float((unsigned int)bf16_bits(g) << 16);
+    packed[(long long)block*{k}*{ns}*columns*{l}+index] = bf16_bits(g-{float(engine.LGS)}f);
+}}
+'''
+    return _compile(source, "memintelli_noisy_conductance", str(engine.device))
