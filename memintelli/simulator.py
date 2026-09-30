@@ -48,9 +48,10 @@ def _normal(address, seed):
 class SimulationEngine(DPETensorMultiMode):
     """Signed INT bit slicing. ``auto`` tries Triton, then visibly falls back.
 
-    A physical array has ``weight_paral_size`` rows/columns. Quantization groups
-    contain complete arrays. Read noise is refreshed per mapped-layer call and
-    shared over that call's batch and activation slices.
+    A physical array has ``weight_paral_size`` rows/columns. Row scale groups
+    span complete array rows; column groups may be narrower than one array.
+    Read noise is refreshed per mapped-layer call and shared over that call's
+    batch and activation slices.
     """
 
     use_multimode_sliced_data = True
