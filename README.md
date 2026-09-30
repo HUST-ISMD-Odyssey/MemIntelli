@@ -425,21 +425,34 @@ After a forward call, `engine.describe()` tells you what actually ran:
 | `torch_adc_fusion` | `active` for fused CUDA ADC, `lookup` for an exact BF16 lookup, `not_used`, `disabled`, or `unavailable` |
 
 Native Windows uses **Torch CUDA**, not Triton, in the documented installation.
-The speed path calls BF16 batched GPU matrix multiplication. For binary slices,
-DAC1, clipped ADC and no array-reference correction, independent weight slices
-are grouped into larger GPU operations. Up to seven weight slices use PyTorch's
-Jiterator/NVRTC runtime to fuse ADC arithmetic and signed reconstruction.
-This works without Triton or a separately installed `nvcc` compiler.
+The speed path calls BF16 batched GPU matrix multiplication. Optional PyTorch
+NVRTC kernels fuse activation quantization/bit slicing and voltage preparation.
+For binary slices, DAC1, clipped ADC of up to eight bits and no array-reference
+correction, input and weight slices are grouped into larger GPU operations.
+One kernel performs every per-slice ADC, signed accumulation and output scaling,
+then PyTorch sums the array-row blocks. This path is used only within a checked
+FP32 exact-integer accumulation bound; other cases retain the general path.
+Intermediate BF16 current chunks target 32 MiB to limit memory traffic.
 
-If runtime compilation is unavailable, a warning and `torch_adc_fusion_error`
-record the reason, and execution continues in portable Torch. Where safe, this
+The optional grouped kernels use PyTorch's internal CUDA compilation API, checked
+at runtime. `torch_cuda_fusion` reports `active`, `not_used`, `disabled` or
+`unavailable`; `torch_cuda_fusion_error` records a compilation failure. Missing
+runtime support warns and retains the previous portable implementation.
+Up to seven weight slices can still use Jiterator ADC fusion, reported separately
+by `torch_adc_fusion` and `torch_adc_fusion_error`. Neither mechanism requires
+Triton or a separately installed `nvcc` compiler.
+
+If both compilation paths are unavailable, execution continues in ordinary Torch.
+Where safe, this
 uses an exact table of the ADC function over BF16 current encodings; otherwise
 it uses the ordinary arithmetic path. The lookup uses the simulated current,
 not an ideal output or test label. FP32 mode, multi-bit cells, and array-reference
-correction retain the general path. GPU memory is bounded by software chunks.
+correction retain the general current/ADC path. Compilation failures do not
+resample noise; out-of-memory and fatal CUDA errors are not silently hidden.
 
 For a direct unfused comparison, set `torch_fuse_adc=False` or use
-`--no-torch-fuse-adc`. This is a software optimization switch, not a different
+`--no-torch-fuse-adc`. This disables the Torch preparation and ADC fusion kernels.
+It is a software optimization switch, not a different
 device model. It does not change ADC saturation, random samples, physical-array
 geometry or quantization granularity.
 

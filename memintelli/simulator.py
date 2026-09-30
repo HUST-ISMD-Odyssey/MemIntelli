@@ -185,6 +185,8 @@ class SimulationEngine(DPETensorMultiMode):
         self.torch_fuse_adc = torch_fuse_adc
         self._torch_fusion_status = "not_used" if torch_fuse_adc else "disabled"
         self._torch_fusion_error = None
+        self._torch_cuda_fusion_status = "not_used" if torch_fuse_adc else "disabled"
+        self._torch_cuda_fusion_error = None
         self.seed, self.program_epoch = int(seed), int(program_epoch)
         self.output_chunk_tiles, self.input_chunk_rows = int(output_chunk_tiles), int(input_chunk_rows)
         self.write_sigmas = _levels(write_variation, g_level, "write_variation", device)
@@ -310,9 +312,24 @@ class SimulationEngine(DPETensorMultiMode):
         groups = math.ceil(features/group)
         values = torch.nn.functional.pad(inputs, (0, groups*group-features)).reshape(rows, groups, group)
         maxima = values.abs().amax(-1, keepdim=True)
+        blocks = math.ceil(features/size)
+        if (self.torch_fuse_adc and inputs.is_cuda and self.execution_mode == "speed"
+                and inputs.dtype == torch.float32
+                and max(rows, features, blocks, groups, *inputs.stride()) < 2**31):
+            from .portable_cuda import get_kernel
+            kernel = get_kernel(self, "slice")
+            if kernel is not None:
+                x.sliced_data = torch.empty((rows, blocks, len(self.input_slice), 1, size),
+                                           device=inputs.device, dtype=torch.uint8)
+                with torch.cuda.device(inputs.device):
+                    kernel(grid=((rows*blocks*size+255)//256, 1, 1), block=(256, 1, 1),
+                           args=[inputs, maxima, x.sliced_data, rows, features, blocks, groups,
+                                 inputs.stride(0), inputs.stride(1)])
+                x.max_data = maxima.repeat_interleave(group//size, dim=1)[:, :blocks, :, None]
+                self._torch_cuda_fusion_status = "active"
+                return x
         safe = torch.where(maxima > 0, maxima, 1.0)
         quantized = (values/safe*(2**(self.activation_bits-1)-1)).round().to(torch.int32)
-        blocks = math.ceil(features/size)
         quantized = quantized.reshape(rows, -1, size)[:, :blocks]
         x.sliced_data = ((quantized[:, :, None, :] >> self._input_shifts)
                          & self._input_masks).to(torch.uint8).unsqueeze(-2)
@@ -428,5 +445,7 @@ class SimulationEngine(DPETensorMultiMode):
             "torch_fuse_adc": self.torch_fuse_adc,
             "torch_adc_fusion": self._torch_fusion_status,
             "torch_adc_fusion_error": self._torch_fusion_error,
+            "torch_cuda_fusion": self._torch_cuda_fusion_status,
+            "torch_cuda_fusion_error": self._torch_cuda_fusion_error,
             "calls": dict(self.execution_counts),
         }

@@ -49,6 +49,12 @@ def accumulate(x, conductance, mat_max, mat, engine, reference=None, valid_colum
 
 def _binary_accumulate(x, conductance, mat_max, mat, engine, valid_columns):
     """Join independent weight-slice columns, keeping every per-array ADC."""
+    if (engine.adc_bits <= 8 and x.sliced_data.dtype == torch.uint8
+            and max(*x.sliced_data.shape, *x.sliced_data.stride()) < 2**31
+            and (2**engine.adc_bits-1)*(2**x.total_bits-1)*(2**mat.total_bits-1) <= 2**24):
+        result = _binary_grouped_accumulate(x, conductance, mat_max, mat, engine, valid_columns)
+        if result is not None:
+            return result
     fused = None
     if len(engine.weight_slice) <= 7:
         fused = _get_fused_adc(engine)
@@ -153,6 +159,47 @@ def _get_fused_adc(engine):
         step=float(step), significance=1.0,
     )
     return engine._torch_adc_function
+
+
+def _binary_grouped_accumulate(x, conductance, mat_max, mat, engine, valid_columns):
+    """Batch input slices only when reassociation is exact in the ADC code domain."""
+    from .portable_cuda import get_kernel
+    fused = get_kernel(engine, "adc_reduce")
+    voltage = get_kernel(engine, "voltage") if fused is not None else None
+    if voltage is None:
+        return None
+    xs = x.sliced_data
+    n, m, ni, j, k = xs.shape
+    _, p, ns, _, l = conductance.shape
+    if j != 1:
+        raise ValueError("Input array height must be one")
+    columns = p*l if valid_columns is None else valid_columns
+    g = conductance.to(torch.bfloat16).permute(0, 3, 2, 1, 4).reshape(m, k, ns, p*l)
+    g = g[..., :columns].reshape(m, k, ns*columns).contiguous()
+    partial = torch.empty((m, n, columns), device=xs.device, dtype=torch.float32)
+    xm = x.max_data.reshape(n, m).float().contiguous()
+    mm = mat_max.expand(m, p, 1, l).reshape(m, p*l)[:, :columns].float().contiguous()
+    # Keep the materialized BF16 slice currents near 32 MiB to limit memory traffic.
+    row_chunk = max(1, min(n, 16_777_216//(m*ni*ns*columns)))
+    old_reduce = torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction
+    try:
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+        for begin in range(0, n, row_chunk):
+            end = min(begin+row_chunk, n)
+            v = torch.empty((m, ni*(end-begin), k), device=xs.device, dtype=torch.bfloat16)
+            with torch.cuda.device(xs.device):
+                voltage(grid=((v.numel()+255)//256, 1, 1), block=(256, 1, 1),
+                        args=[xs, v, m, end-begin, begin, xs.stride(0), xs.stride(1),
+                              xs.stride(2), xs.stride(4)])
+            currents = torch.bmm(v, g).reshape(m, ni, end-begin, ns, columns)
+            with torch.cuda.device(xs.device):
+                fused(grid=((m*(end-begin)*columns+255)//256, 1, 1), block=(256, 1, 1),
+                      args=[currents, xm, mm, partial, m, end-begin, n, columns, begin])
+        engine._torch_fusion_status = "active"
+        engine._torch_cuda_fusion_status = "active"
+        return partial.sum(0)
+    finally:
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = old_reduce
 
 
 def _binary_lookup_accumulate(x, conductance, mat_max, mat, engine, valid_columns):

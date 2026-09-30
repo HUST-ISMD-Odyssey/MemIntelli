@@ -7,11 +7,15 @@ All examples default to `--backend auto --mode speed --adc-clip`.
 Use `--backend torch` for native Windows, or `--backend triton` to require
 Triton without fallback.
 
-Torch CUDA enables ADC fusion by default for supported speed-mode settings.
+Torch CUDA enables input preparation and grouped ADC fusion by default for
+supported speed-mode settings. The grouped kernel combines per-slice ADC,
+signed accumulation and output scaling without changing the physical arrays.
 Use `--no-torch-fuse-adc` for an unfused comparison. Check
-`simulation.torch_adc_fusion` and `simulation.torch_adc_fusion_error` to see
-whether runtime compilation was used; its first-call cost is separate from
-steady inference. This does not require Triton on Windows.
+`simulation.torch_cuda_fusion` and `simulation.torch_cuda_fusion_error` for the
+new grouped path; `simulation.torch_adc_fusion` reports ADC fusion including
+the older Jiterator fallback. Compilation failures warn and keep portable Torch
+available. First-call compilation is separate from steady inference.
+This does not require Triton on Windows.
 
 ## Order
 

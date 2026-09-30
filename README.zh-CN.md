@@ -175,18 +175,25 @@ VOC2007/
 很细的 ADC 分辨率时，应同时用 `accurate` 检查数值精度。
 
 Torch 后端默认启用 `torch_fuse_adc=True`。对常用的一位切片、DAC1、
-`adc_clip=True`、无阵列参考校正的配置，会合并独立位片的矩阵乘法，
-并使用 PyTorch 自带的 CUDA 运行时编译，把 ADC 和输出重构合成一个计算内核。
+`adc_clip=True`、ADC不超过8位、无阵列参考校正的配置，会合并输入和权重位片的矩阵乘法，
+并把各位片的ADC、带符号累加和输出缩放合成一个CUDA内核。
+输入量化、位切片和电压数据转换也使用融合内核，减少中间数据读写。
+程序检查FP32整数累加范围，超出该范围则保留通用路径。
 Windows 不需要安装 Triton，也不需要单独安装 `nvcc`。
 
+查看 `torch_cuda_fusion`：`active` 表示新的CUDA融合内核已执行，
+`unavailable` 表示当前PyTorch运行时不支持或编译失败，原因见 `torch_cuda_fusion_error`。
+该优化使用PyTorch内部编译接口，程序会检查是否可用；不可用时警告并保留原计算路径，
+其中仍可能使用上一种Jiterator ADC融合。
 查看 `torch_adc_fusion`：`active` 表示融合内核已执行，`lookup` 表示使用
 等价的 BF16 电流查表；`not_used` 表示本次未使用，`disabled` 表示手动关闭，
 `unavailable` 表示编译不可用，具体原因见 `torch_adc_fusion_error`。
 编译不可用时会警告并继续使用普通 Torch 路径。查表只预先计算 ADC 函数，
 输入仍是实际仿真电流，不是用理想答案替代阵列计算。
 
-用 `--no-torch-fuse-adc`，或设置 `torch_fuse_adc=False`，可与未融合路径对照。
-多位器件、FP32模式和阵列参考校正仍使用通用计算路径。
+用 `--no-torch-fuse-adc`，或设置 `torch_fuse_adc=False`，可关闭Torch输入准备及ADC融合，
+与未融合路径对照。多位器件、FP32模式和阵列参考校正仍使用通用电流及ADC计算路径。
+编译失败回退不改变噪声采样；显存不足或CUDA执行错误不会被静默忽略。
 Triton 后端则融合输入量化、位切片，并对常用64行配置调整GPU计算块。
 这些优化都保留每个位片、每个物理阵列的ADC，不改变噪声或量化粒度。
 
