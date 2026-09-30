@@ -198,6 +198,9 @@ Windows 不需要安装 Triton，也不需要单独安装 `nvcc`。
 与未融合路径对照。多位器件、FP32模式和阵列参考校正仍使用通用电流及ADC计算路径。
 编译失败回退不改变噪声采样；显存不足或CUDA执行错误不会被静默忽略。
 Triton 后端则融合输入量化、位切片，并对常用64行配置调整GPU计算块。
+Triton的speed模式也融合器件寻址、分态噪声、漂移和BF16电导恢复，
+并按预算在同一次读取的输入分块之间复用电导；下一次读取或GRU下一时间步仍刷新读噪声。
+`triton_conductance_calls` 记录Triton电导融合调用次数。
 这些优化都保留每个位片、每个物理阵列的ADC，不改变噪声或量化粒度。
 
 默认使用 `chunk_policy="auto"`、`workspace_mb=512`，即512 MiB临时工作区预算。
@@ -215,8 +218,9 @@ Triton 后端则融合输入量化、位切片，并对常用64行配置调整GP
 `--workspace-mb`，不要直接改动物理阵列。最小计算块仍可能超出很小的预算，
 实际选定的分块及估计占用可在 `engine.describe()["chunk_plans"]` 中查看。
 
-自动调度用于满足融合条件的Torch CUDA一位切片、截断ADC、speed路径。
-Triton、CPU、accurate模式、多位切片、阵列参考校正及融合不可用时使用手动分块。
+自动调度支持Triton CUDA的speed模式，以及满足融合条件的Torch CUDA一位切片、
+截断ADC、speed路径。Triton的中间位片电流保留在内核中，预算不计入全局电流张量。
+CPU和accurate模式使用手动分块；Torch的多位切片、阵列参考校正及融合不可用时也使用手动分块。
 若需要明确控制分块，设置 `chunk_policy="manual"`，或：
 
 ```powershell

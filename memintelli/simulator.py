@@ -193,6 +193,7 @@ class SimulationEngine(DPETensorMultiMode):
         self._torch_cuda_fusion_status = "not_used" if torch_fuse_adc else "disabled"
         self._torch_cuda_fusion_error = None
         self._torch_packed_reads = 0
+        self._triton_conductance_reads = 0
         self.seed, self.program_epoch = int(seed), int(program_epoch)
         self.output_chunk_tiles, self.input_chunk_rows = int(output_chunk_tiles), int(input_chunk_rows)
         self.chunk_policy, self.workspace_mb = chunk_policy, workspace_mb
@@ -240,9 +241,10 @@ class SimulationEngine(DPETensorMultiMode):
             try:
                 if device.type != "cuda":
                     raise RuntimeError("Triton needs a CUDA device")
-                from .portable_triton import accumulate, slice_input
+                from .portable_triton import accumulate, slice_input, restore_conductance
                 self._triton_accumulate = accumulate
                 self._triton_slice_input = slice_input
+                self._triton_restore = restore_conductance
             except Exception as exc:
                 self._fallback(exc)
 
@@ -391,6 +393,21 @@ class SimulationEngine(DPETensorMultiMode):
             self._drift_table_key = key
         return self._drift_table
 
+    def _restore_conductance(self, mat, start, end, *, read_epoch):
+        if self.backend_requested != "torch" and self._fallback_reason is None:
+            try:
+                restored = self._triton_restore(mat, self, start, end, read_epoch)
+                if restored is not None:
+                    self._triton_conductance_reads += 1
+                    return restored
+            except Exception as exc:
+                if isinstance(exc, torch.cuda.OutOfMemoryError) or any(
+                    text in str(exc).lower() for text in ("illegal memory access", "device-side assert")
+                ):
+                    raise
+                self._fallback(exc)
+        return self._restore_for_torch(mat, start, end, read_epoch=read_epoch)
+
     def _accumulate(self, x, g, mat_max, mat, reference, valid_columns):
         from .portable_torch import accumulate
         if self.backend_requested != "torch" and self._fallback_reason is None:
@@ -436,7 +453,7 @@ class SimulationEngine(DPETensorMultiMode):
                 g = _read_cache["values"][key]
                 self._conductance_reuses += 1
             else:
-                g = self._restore_for_torch(mat, start, end, read_epoch=epoch)
+                g = self._restore_conductance(mat, start, end, read_epoch=epoch)
                 size = g.numel()*g.element_size()
                 if _read_cache is not None and size <= _read_cache["remaining_bytes"]:
                     _read_cache["values"][key] = g
@@ -490,8 +507,9 @@ class SimulationEngine(DPETensorMultiMode):
         packed_bytes = mapped_weight.G_indices.numel()*2
         cache = {"values": {}, "remaining_bytes": self._workspace_bytes//4} if (
                        len(flat) > input_rows and self.device.type == "cuda"
-                       and self.execution_mode == "speed" and self.torch_fuse_adc
-                       and (self.backend_requested == "torch" or self._fallback_reason is not None)
+                       and self.execution_mode == "speed"
+                       and (self.torch_fuse_adc or (self.backend_requested != "torch"
+                                                   and self._fallback_reason is None))
                        and packed_bytes <= self._workspace_bytes//4) else None
         result = []
         if "budget_bytes" in plan:
@@ -507,25 +525,26 @@ class SimulationEngine(DPETensorMultiMode):
         return torch.cat(result).reshape(*shape[:-1], mapped_weight.shape[1])
 
     def _execution_plan(self, samples, mat):
-        # Auto scheduling currently models the fused binary Torch path. Other
-        # backends/precisions retain the explicitly requested software chunks.
-        eligible = (self.device.type == "cuda" and self.execution_mode == "speed"
+        triton_selected = self.backend_requested != "torch" and self._fallback_reason is None
+        triton_eligible = triton_selected and self.device.type == "cuda" and self.execution_mode == "speed"
+        torch_eligible = (not triton_selected and self.device.type == "cuda" and self.execution_mode == "speed"
                     and self.torch_fuse_adc and self.adc_clip and self.dac_bits == 1
                     and self.adc_bits <= 8 and max(self.input_slice + self.weight_slice) == 1
                     and (2**self.adc_bits-1)*(2**self.activation_bits-1)
                     *(2**self.weight_bits-1) <= 2**24
                     and getattr(mat, "adc_reference", None) is None
-                    and self._torch_cuda_fusion_error is None
-                    and (self.backend_requested == "torch" or self._fallback_reason is not None))
-        if self.chunk_policy != "auto" or not eligible:
+                    and self._torch_cuda_fusion_error is None)
+        if self.chunk_policy != "auto" or not (torch_eligible or triton_eligible):
             return {"input_rows": self.input_chunk_rows, "output_tiles": self.output_chunk_tiles}
-        key = (samples, mat.logical_index_shape, self._workspace_bytes)
+        key = (samples, mat.logical_index_shape, self._workspace_bytes, triton_selected)
         if key not in self._chunk_plans:
             from .scheduling import plan_chunks
             self._chunk_plans[key] = dict(
                 plan_chunks(samples, mat.logical_index_shape,
-                            len(self.input_slice), self._workspace_bytes*3//4),
-                samples=samples, logical_index_shape=mat.logical_index_shape)
+                            len(self.input_slice), self._workspace_bytes*3//4,
+                            materialized_currents=not triton_selected),
+                samples=samples, logical_index_shape=mat.logical_index_shape,
+                backend="triton" if triton_selected else "torch")
         return self._chunk_plans[key]
 
     def current_chunk_rows(self, n, blocks, input_slices, weight_slices, columns):
@@ -560,5 +579,6 @@ class SimulationEngine(DPETensorMultiMode):
             "torch_cuda_fusion": self._torch_cuda_fusion_status,
             "torch_cuda_fusion_error": self._torch_cuda_fusion_error,
             "torch_packed_conductance_calls": self._torch_packed_reads,
+            "triton_conductance_calls": self._triton_conductance_reads,
             "calls": dict(self.execution_counts),
         }

@@ -2,9 +2,81 @@
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 from .pimpy.triton_bf16_kernel import _bf16_partial_kernel
 from .pimpy.triton_fast_accumulate import _round_even
+
+
+@triton.jit
+def _device_hash(value):
+    value = value.to(tl.uint32)
+    value = (value ^ (value >> 16)) * 0x7feb352d
+    value = (value ^ (value >> 15)) * 0x846ca68b
+    return value ^ (value >> 16)
+
+
+@triton.jit
+def _sqrt_rn(value):
+    # The default libdevice lowering may choose approximate sqrt. Match Torch's
+    # correctly rounded square root before the Box-Muller sample is multiplied.
+    return tl.inline_asm_elementwise(
+        "sqrt.rn.f32 $0, $1;", constraints="=f,f", args=[value],
+        dtype=tl.float32, is_pure=True, pack=1,
+    )
+
+
+@triton.jit
+def _device_normal(address, seed):
+    first = _device_hash(address.to(tl.uint32) ^ seed.to(tl.uint32))
+    second = _device_hash(first ^ 0xa511e9b3)
+    u = ((first >> 8).to(tl.float32) + 0.5) * (1.0 / 16777216.0)
+    v = ((second >> 8).to(tl.float32) + 0.5) * (1.0 / 16777216.0)
+    return _sqrt_rn(-2.0 * libdevice.log(u)) * libdevice.cos(6.2831854820251465 * v)
+
+
+@triton.jit
+def _restore_kernel(INDICES, NOMINAL, WRITE_SIGMA, READ_SIGMA, DRIFT, OUTPUT,
+                    COUNT: tl.constexpr, SOURCE_COLUMNS: tl.constexpr,
+                    COLUMNS: tl.constexpr, START, DEVICES_PER_TILE: tl.constexpr,
+                    WRITE_SEED, READ_SEED, LGS: tl.constexpr,
+                    WRITE: tl.constexpr, READ: tl.constexpr, RETENTION: tl.constexpr,
+                    BLOCK: tl.constexpr):
+    index = tl.program_id(0).to(tl.int64)*BLOCK + tl.arange(0, BLOCK)
+    block = index // (COLUMNS*DEVICES_PER_TILE)
+    within = index % (COLUMNS*DEVICES_PER_TILE)
+    address = (block*SOURCE_COLUMNS + START)*DEVICES_PER_TILE + within
+    state = tl.load(INDICES + address, index < COUNT, other=0).to(tl.int32)
+    g = tl.load(NOMINAL + state)
+    if WRITE:
+        g = g * libdevice.exp(_device_normal(address, WRITE_SEED) * tl.load(WRITE_SIGMA + state))
+    if RETENTION:
+        g = g * tl.load(DRIFT + state)
+    if READ:
+        g = g * libdevice.exp(_device_normal(address, READ_SEED) * tl.load(READ_SIGMA + state))
+    g = g.to(tl.bfloat16, fp_downcast_rounding="rtne").to(tl.float32)
+    g = (g - LGS).to(tl.bfloat16, fp_downcast_rounding="rtne")
+    tl.store(OUTPUT + index, g, index < COUNT)
+
+
+def restore_conductance(mat, engine, start, end, read_epoch):
+    """Restore one logical device sample in native array layout, without FP32 temporaries."""
+    if engine.execution_mode != "speed" or not mat.G_indices.is_contiguous():
+        return None
+    m, p, s, k, l = mat.logical_index_shape
+    output = torch.empty((m, end-start, s, k, l), device=engine.device, dtype=torch.bfloat16)
+    layer_key = engine.seed + mat.simulation_layer_id*1000003
+    with torch.cuda.device(engine.device):
+        _restore_kernel[(triton.cdiv(output.numel(), 256),)](
+            mat.G_indices, engine._nominal_conductance, engine.write_sigmas,
+            engine.read_sigmas, engine._drift_factors(), output,
+            output.numel(), p, end-start, start, s*k*l,
+            (layer_key + mat.program_epoch*31337) & 0xffffffff,
+            (layer_key + 0x13579bdf + read_epoch*104729) & 0xffffffff,
+            engine.LGS, engine._write_active, engine._read_active, engine._drift_active,
+            256, num_warps=4, enable_fp_fusion=False,
+        )
+    return output
 
 
 @triton.jit

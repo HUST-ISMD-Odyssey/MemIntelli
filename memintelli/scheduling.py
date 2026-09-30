@@ -2,7 +2,7 @@
 import math
 
 
-def plan_chunks(samples, shape, input_slices, budget):
+def plan_chunks(samples, shape, input_slices, budget, *, materialized_currents=True):
     """Minimize dispatches under a temporary-memory budget, without timed trials."""
     m, p, ns, k, l = shape
     ni = input_slices
@@ -11,9 +11,14 @@ def plan_chunks(samples, shape, input_slices, budget):
     for tiles in candidates:
         columns = tiles*l
         # Packed conductance plus the copy needed for a partial last output tile.
-        fixed = (6 if samples == 1 else 4)*m*k*ns*columns
-        # Sliced inputs, voltages, partial outputs, currents, and input preparation.
-        per_row = m*(3*ni*k + 4*columns + 2*ni*ns*columns + 12*k)
+        if materialized_currents:
+            fixed = (6 if samples == 1 else 4)*m*k*ns*columns
+            # Sliced inputs, voltages, partial outputs, currents, and input preparation.
+            per_row = m*(3*ni*k + 4*columns + 2*ni*ns*columns + 12*k)
+        else:
+            # Triton keeps slice currents in the kernel, not a global tensor.
+            fixed = 2*m*k*ns*columns
+            per_row = m*(ni*k + 4*columns + 4 + 8*k)
         rows = min(samples, max(1, (budget-fixed)//max(1, per_row)))
         if rows >= 32 and rows < samples:
             rows = rows//32*32

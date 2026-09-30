@@ -377,7 +377,7 @@ device measurements or project-specific calibration files are bundled.
 | `drift_reference_time` | `1` | Positive reference time, in the same unit as retention time. |
 | `seed` | `42` | Device/read seed, integer from 0 through `2**32-1`. |
 | `program_epoch` | `0` | Nonnegative programming-round identifier. |
-| `chunk_policy` | `"auto"` | Joint input/weight software tiling on the eligible Torch CUDA path; `"manual"` uses the two limits below. |
+| `chunk_policy` | `"auto"` | Joint input/weight software tiling on Triton speed mode and eligible Torch CUDA paths; `"manual"` uses the two limits below. |
 | `workspace_mb` | `512` | Temporary-workspace budget in MiB, not a cap on total GPU memory. |
 | `input_chunk_rows` | `256` | Maximum sample/token rows processed together in manual mode or an unsupported auto path. |
 | `output_chunk_tiles` | `8` | Maximum output-array column blocks processed together in manual mode or an unsupported auto path. |
@@ -428,6 +428,7 @@ After a forward call, `engine.describe()` tells you what actually ran:
 | `torch_adc_fusion` | `active` for fused CUDA ADC, `lookup` for an exact BF16 lookup, `not_used`, `disabled`, or `unavailable` |
 | `chunk_plans` | Effective input rows, output-array groups and estimated temporary bytes for each automatically scheduled shape. |
 | `torch_packed_conductance_calls`, `conductance_reuses` | Fused weight restorations and reuse within a logical read. |
+| `triton_conductance_calls` | Native Triton fused conductance restorations in speed mode. |
 
 Native Windows uses **Torch CUDA**, not Triton, in the documented installation.
 The speed path calls BF16 batched GPU matrix multiplication. Optional PyTorch
@@ -447,6 +448,11 @@ time steps. When budget permits, restored weights are reused across the input
 chunks of the same read. Single-row inference batches narrow output groups
 instead of using one very wide GEMM, avoiding the different current-rounding
 path observed for large vocabulary projections.
+
+Triton speed mode also fuses device addressing, state-dependent noise, drift and
+BF16 conductance restoration. It uses the same logical seeds and rounding as the
+reference path, and can reuse restored conductances within one logical read.
+Read noise is refreshed at the next read, including the next GRU time step.
 
 The optional grouped kernels use PyTorch's internal CUDA compilation API, checked
 at runtime. `torch_cuda_fusion` reports `active`, `not_used`, `disabled` or
@@ -479,7 +485,8 @@ physical array. Large quantization groups retain the portable input slicer.
 
 `chunk_policy="auto"` selects input rows and weight output-column groups jointly,
 using the layer shape, actual bit-slice counts and `workspace_mb`. It estimates
-packed weights, input slices, voltages, partial outputs and materialized currents,
+packed weights, input slices, voltages, partial outputs and materialized currents
+(Triton keeps its slice currents inside the kernel instead),
 then minimizes the estimated number of dispatches. Tail input chunks are balanced.
 No training samples, labels or runtime search are used. This is a shape-based
 heuristic, not a guarantee of the fastest possible configuration.
@@ -492,11 +499,12 @@ block may itself exceed a very small budget; `chunk_plans` reports that case.
 Increasing the budget can reduce launches and repeated restoration, but does not
 necessarily improve throughput. If memory is limited, reduce `--workspace-mb`.
 
-Automatic scheduling currently covers eligible binary-sliced, clipped-ADC
-Torch CUDA speed-mode inference. Triton, CPU, accurate mode, multi-bit slices,
-array-reference correction and unavailable grouped CUDA fusion retain manual
-chunk limits. Neither policy changes physical `paral_size`, ADC width, quantization
-granularity or the logical addresses used for noise.
+Automatic scheduling covers Triton CUDA speed mode and eligible binary-sliced,
+clipped-ADC Torch CUDA speed-mode inference. CPU and accurate mode retain manual
+chunk limits. On Torch, multi-bit slices, array-reference correction and
+unavailable grouped CUDA fusion also retain manual limits. Neither policy changes
+physical `paral_size`, ADC width, quantization granularity or the logical addresses
+used for noise.
 
 For explicitly controlled chunks, use:
 

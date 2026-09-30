@@ -142,7 +142,7 @@ VOC2007/
   ImageSets/Main/test.txt
 ```
 
-Eligible Torch CUDA inference uses `--chunk-policy auto --workspace-mb 512`
+Triton speed mode and eligible Torch CUDA inference use `--chunk-policy auto --workspace-mb 512`
 to select input and weight chunks jointly. The YOLO manual/fallback input limit
 is 16384, compared with 256 in the general engine. To control it explicitly, use
 `--chunk-policy manual --input-chunk-rows 4096 --output-chunk-tiles 8`.
